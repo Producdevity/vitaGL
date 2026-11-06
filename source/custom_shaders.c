@@ -724,7 +724,8 @@ void unserialize_shader(void *in, size_t sz, shader *s, GLboolean load_bindings)
 	s->size = sz - ((uintptr_t)buf - (uintptr_t)in);
 	s->prog = (SceGxmProgram *)vglMalloc(s->size);
 	vgl_fast_memcpy((SceGxmProgram *)s->prog, buf, s->size);
-	sceGxmShaderPatcherRegisterProgram(gxm_shader_patcher, s->prog, &s->id);
+	int r = sceGxmShaderPatcherRegisterProgram(gxm_shader_patcher, s->prog, &s->id);
+	vgl_diag_event(s->type == GL_FRAGMENT_SHADER ? VGL_SHADER_DIAG_CUSTOM_FRAGMENT_REGISTER : VGL_SHADER_DIAG_CUSTOM_VERTEX_REGISTER, r == 0);
 	s->unif_buf_size = sceGxmProgramGetDefaultUniformBufferSize(s->prog);
 	if (matrix_uniforms_num) {
 		uint32_t *_m = (uint32_t *)in + 1;
@@ -746,13 +747,17 @@ static inline __attribute__((always_inline)) void compile_shader(shader *s, GLbo
 static inline __attribute__((always_inline)) void compile_shader(shader *s, GLboolean save_bindings) {
 #endif
 	// Compiling shader source
+	vglShaderDiagnosticStage diag_stage = s->type == GL_FRAGMENT_SHADER ? VGL_SHADER_DIAG_CUSTOM_FRAGMENT_COMPILE : VGL_SHADER_DIAG_CUSTOM_VERTEX_COMPILE;
+	uint64_t diag_start = vgl_diag_begin(diag_stage);
 	s->prog = shark_compile_shader_extended((const char *)s->source, &s->size, s->type == GL_FRAGMENT_SHADER ? SHARK_FRAGMENT_SHADER : SHARK_VERTEX_SHADER, compiler_opts, compiler_fastmath, compiler_fastprecision, compiler_fastint);
+	vgl_diag_end(diag_stage, diag_start, s->prog != NULL);
 	if (s->prog) {
 		vgl_free(s->source);
 		s->source = NULL;
 		SceGxmProgram *res = (SceGxmProgram *)vglMalloc(s->size);
 		vgl_fast_memcpy((void *)res, (void *)s->prog, s->size);
 		int r = sceGxmShaderPatcherRegisterProgram(gxm_shader_patcher, res, &s->id);
+		vgl_diag_event(s->type == GL_FRAGMENT_SHADER ? VGL_SHADER_DIAG_CUSTOM_FRAGMENT_REGISTER : VGL_SHADER_DIAG_CUSTOM_VERTEX_REGISTER, r == 0);
 #ifdef LOG_ERRORS
 		if (r) {
 			vgl_log("%s:%d %s: Program failed to register on sceGxm (%s).\n", __FILE__, __LINE__, __func__, get_gxm_error_literal(r));
@@ -2003,6 +2008,8 @@ void glShaderBinary(GLsizei count, const GLuint *handles, GLenum binaryFormat, c
 
 void glCompileShader(GLuint handle) {
 	THREAD_SAFE()
+	if (vgl_shader_diagnostics.enabled)
+		vgl_shader_diagnostics.compile_requests++;
 
 	// If vitaShaRK is not enabled, we try to initialize it
 	if (!is_shark_online && !start_shader_compiler()) {
@@ -2013,14 +2020,19 @@ void glCompileShader(GLuint handle) {
 	shader *s = shaders[handle - 1];
 	
 	// If we use VGL_MODE_POSTPONED, we compile shaders in glLinkProgram
-	if (s->is_glsl && glsl_sema_mode == VGL_MODE_POSTPONED)
+	if (s->is_glsl && glsl_sema_mode == VGL_MODE_POSTPONED) {
+		if (vgl_shader_diagnostics.enabled)
+			vgl_shader_diagnostics.postponed_requests++;
 		return;
+	}
 	
 #ifdef HAVE_SHADER_CACHE
 	char fname[256];
 	uint64_t hash = XXH3_64bits(s->source, s->size);
 	uint8_t subdir_hash = hash >> 56;
 	int fname_len = sprintf(fname, "%s/%s/%02X/%016llX.gxp", vgl_shader_cache_path, s->type == GL_VERTEX_SHADER ? "v" : "f", subdir_hash, hash);
+	vglShaderDiagnosticStage diag_stage = s->type == GL_FRAGMENT_SHADER ? VGL_SHADER_DIAG_CUSTOM_FRAGMENT_CACHE : VGL_SHADER_DIAG_CUSTOM_VERTEX_CACHE;
+	uint64_t diag_start = vgl_diag_begin(diag_stage);
 	SceUID f = sceIoOpen(fname, SCE_O_RDONLY, 0777);
 	if (f >= 0) {
 		vgl_free(s->source);
@@ -2032,8 +2044,10 @@ void glCompileShader(GLuint handle) {
 		sceIoClose(f);
 		unserialize_shader(buf, sz, s, GL_FALSE);
 		vgl_free(buf);
+		vgl_diag_end(diag_stage, diag_start, GL_TRUE);
 		return;
 	}
+	vgl_diag_end(diag_stage, diag_start, GL_FALSE);
 #endif
 
 	if (s->is_glsl) {
@@ -2380,6 +2394,7 @@ void glGetProgramiv(GLuint progr, GLenum pname, GLint *params) {
 
 void glLinkProgram(GLuint progr) {
 	THREAD_SAFE()
+	uint64_t diag_link_start = vgl_diag_begin(VGL_SHADER_DIAG_CUSTOM_LINK);
 
 	// Grabbing passed program
 	program *p = &progs[progr - 1];
@@ -2390,11 +2405,17 @@ void glLinkProgram(GLuint progr) {
 	if (glsl_sema_mode == VGL_MODE_POSTPONED) {
 		if (!(p->fshader->prog || (p->fshader->is_glsl && p->fshader->source)) || !(p->vshader->prog || (p->vshader->is_glsl && p->vshader->source))) {
 			vgl_log("%s:%d: %s: %s shader is missing.\n", __FILE__, __LINE__, __func__, (p->fshader->prog || (p->fshader->is_glsl && p->fshader->source)) ? "vertex" : "fragment");
+			if (vgl_shader_diagnostics.enabled)
+				vgl_shader_diagnostics.link_missing_shaders++;
+			vgl_diag_end(VGL_SHADER_DIAG_CUSTOM_LINK, diag_link_start, GL_FALSE);
 			return;
 		}
 	} else {
 		if (!p->fshader->prog || !p->vshader->prog) {
 			vgl_log("%s:%d: %s: %s shader is missing.\n", __FILE__, __LINE__, __func__, p->fshader->prog ? "vertex" : "fragment");
+			if (vgl_shader_diagnostics.enabled)
+				vgl_shader_diagnostics.link_missing_shaders++;
+			vgl_diag_end(VGL_SHADER_DIAG_CUSTOM_LINK, diag_link_start, GL_FALSE);
 			return;
 		}
 	}
@@ -2411,6 +2432,7 @@ void glLinkProgram(GLuint progr) {
 			uint64_t hash = XXH3_64bits(p->vshader->source, p->vshader->size);
 			uint8_t subdir_hash = hash >> 56;
 			fname_len = sprintf(vert_fname, "%s/v/%02X/%016llX.gxp", vgl_shader_cache_path, subdir_hash, hash);
+			uint64_t diag_start = vgl_diag_begin(VGL_SHADER_DIAG_CUSTOM_VERTEX_CACHE);
 			SceUID f = sceIoOpen(vert_fname, SCE_O_RDONLY, 0777);
 			if (f >= 0) {
 				size_t sz = sceIoLseek(f, 0, SCE_SEEK_END);
@@ -2421,11 +2443,13 @@ void glLinkProgram(GLuint progr) {
 				unserialize_shader(buf, sz, p->vshader, GL_TRUE);
 				vgl_free(buf);
 			}
+			vgl_diag_end(VGL_SHADER_DIAG_CUSTOM_VERTEX_CACHE, diag_start, f >= 0);
 		}
 		if (!p->fshader->prog) {
 			uint64_t hash = XXH3_64bits(p->fshader->source, p->fshader->size);
 			uint8_t subdir_hash = hash >> 56;
 			fname_len = sprintf(frag_fname, "%s/f/%02X/%016llX.gxp", vgl_shader_cache_path, subdir_hash, hash);
+			uint64_t diag_start = vgl_diag_begin(VGL_SHADER_DIAG_CUSTOM_FRAGMENT_CACHE);
 			SceUID f = sceIoOpen(frag_fname, SCE_O_RDONLY, 0777);
 			if (f >= 0) {
 				size_t sz = sceIoLseek(f, 0, SCE_SEEK_END);
@@ -2436,6 +2460,7 @@ void glLinkProgram(GLuint progr) {
 				unserialize_shader(buf, sz, p->fshader, GL_TRUE);
 				vgl_free(buf);
 			}
+			vgl_diag_end(VGL_SHADER_DIAG_CUSTOM_FRAGMENT_CACHE, diag_start, f >= 0);
 		}
 #endif
 		if (!p->vshader->prog || !p->fshader->prog) {
@@ -2471,6 +2496,9 @@ void glLinkProgram(GLuint progr) {
 
 	if (p->status == PROG_LINKED) {
 		vgl_log("%s:%d: %s: A program has been re-linked. vitaGL doesn't support re-linking, glitches may happen.\n", __FILE__, __LINE__, __func__);
+		if (vgl_shader_diagnostics.enabled)
+			vgl_shader_diagnostics.link_relinked++;
+		vgl_diag_end(VGL_SHADER_DIAG_CUSTOM_LINK, diag_link_start, GL_FALSE);
 		return;
 	}
 	p->status = PROG_LINKED;
@@ -2689,6 +2717,7 @@ void glLinkProgram(GLuint progr) {
 			}
 		}
 	}
+	vgl_diag_end(VGL_SHADER_DIAG_CUSTOM_LINK, diag_link_start, GL_TRUE);
 }
 
 void glUseProgram(GLuint prog) {
@@ -4026,6 +4055,7 @@ void vglShaderGxpBinary(GLsizei count, const GLuint *handles, const void *binary
 	s->size = length;
 	s->prog = (SceGxmProgram *)vglMalloc(s->size);
 	vgl_fast_memcpy((SceGxmProgram *)s->prog, binary, s->size);
-	sceGxmShaderPatcherRegisterProgram(gxm_shader_patcher, s->prog, &s->id);
+	int r = sceGxmShaderPatcherRegisterProgram(gxm_shader_patcher, s->prog, &s->id);
+	vgl_diag_event(s->type == GL_FRAGMENT_SHADER ? VGL_SHADER_DIAG_CUSTOM_FRAGMENT_REGISTER : VGL_SHADER_DIAG_CUSTOM_VERTEX_REGISTER, r == 0);
 	s->unif_buf_size = sceGxmProgramGetDefaultUniformBufferSize(s->prog);
 }

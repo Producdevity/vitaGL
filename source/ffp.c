@@ -824,6 +824,7 @@ uint8_t reload_ffp_shaders(SceGxmVertexAttribute *attrs, SceGxmVertexStream *str
 #else
 		sprintf(fname, "ux0:data/shader_cache/v%d/v/%08X-%d.gxp", FFP_SHADER_CACHE_MAGIC, vert_shader_mask, WVP_ON_GPU);
 #endif
+		uint64_t diag_cache_start = vgl_diag_begin(VGL_SHADER_DIAG_FFP_VERTEX_CACHE);
 		SceUID f = sceIoOpen(fname, SCE_O_RDONLY, 0777);
 		if (f >= 0) {
 			// Gathering the precompiled shader from cache
@@ -832,7 +833,9 @@ uint8_t reload_ffp_shaders(SceGxmVertexAttribute *attrs, SceGxmVertexStream *str
 			ffp_vertex_program = (SceGxmProgram *)vglMalloc(size);
 			sceIoRead(f, ffp_vertex_program, size);
 			sceIoClose(f);
+			vgl_diag_end(VGL_SHADER_DIAG_FFP_VERTEX_CACHE, diag_cache_start, GL_TRUE);
 		} else {
+			vgl_diag_end(VGL_SHADER_DIAG_FFP_VERTEX_CACHE, diag_cache_start, GL_FALSE);
 			// Restarting vitaShaRK if we released it before
 			if (!is_shark_online)
 				start_shader_compiler();
@@ -841,7 +844,9 @@ uint8_t reload_ffp_shaders(SceGxmVertexAttribute *attrs, SceGxmVertexStream *str
 			char vshader[8192];
 			sprintf(vshader, ffp_vert_src, mask.clip_planes_num, mask.num_textures, mask.has_colors, mask.lights_num, mask.lighting, mask.shading_mode, mask.normalize, mask.fixed_mask, mask.pos_fixed_mask, WVP_ON_GPU, mask.fast_perspective_correction);
 			uint32_t size = strlen(vshader);
+			uint64_t diag_compile_start = vgl_diag_begin(VGL_SHADER_DIAG_FFP_VERTEX_COMPILE);
 			SceGxmProgram *t = shark_compile_shader_extended(vshader, &size, SHARK_VERTEX_SHADER, compiler_opts, compiler_fastmath, compiler_fastprecision, compiler_fastint);
+			vgl_diag_end(VGL_SHADER_DIAG_FFP_VERTEX_COMPILE, diag_compile_start, t != NULL);
 			ffp_vertex_program = (SceGxmProgram *)vglMalloc(size);
 			vgl_fast_memcpy((void *)ffp_vertex_program, (void *)t, size);
 			shark_clear_output();
@@ -851,7 +856,8 @@ uint8_t reload_ffp_shaders(SceGxmVertexAttribute *attrs, SceGxmVertexStream *str
 			sceIoWrite(f, ffp_vertex_program, size);
 			sceIoClose(f);
 		}
-		sceGxmShaderPatcherRegisterProgram(gxm_shader_patcher, ffp_vertex_program, &ffp_vertex_program_id);
+		int diag_register_result = sceGxmShaderPatcherRegisterProgram(gxm_shader_patcher, ffp_vertex_program, &ffp_vertex_program_id);
+		vgl_diag_event(VGL_SHADER_DIAG_FFP_VERTEX_REGISTER, diag_register_result == 0);
 		ffp_vertex_unif_buf_size = sceGxmProgramGetDefaultUniformBufferSize(ffp_vertex_program);
 		ffp_vertex_unif_buf = vglMalloc(ffp_vertex_unif_buf_size);
 
@@ -1052,6 +1058,7 @@ uint8_t reload_ffp_shaders(SceGxmVertexAttribute *attrs, SceGxmVertexStream *str
 		sprintf(fname, "ux0:data/shader_cache/v%d/f/%08X-0000000000000000.gxp", FFP_SHADER_CACHE_MAGIC, frag_shader_mask);
 #endif
 #endif
+		uint64_t diag_cache_start = vgl_diag_begin(VGL_SHADER_DIAG_FFP_FRAGMENT_CACHE);
 		SceUID f = sceIoOpen(fname, SCE_O_RDONLY, 0777);
 		if (f >= 0) {
 			// Gathering the precompiled shader from cache
@@ -1060,7 +1067,9 @@ uint8_t reload_ffp_shaders(SceGxmVertexAttribute *attrs, SceGxmVertexStream *str
 			ffp_fragment_program = (SceGxmProgram *)vglMalloc(size);
 			sceIoRead(f, ffp_fragment_program, size);
 			sceIoClose(f);
+			vgl_diag_end(VGL_SHADER_DIAG_FFP_FRAGMENT_CACHE, diag_cache_start, GL_TRUE);
 		} else {
+			vgl_diag_end(VGL_SHADER_DIAG_FFP_FRAGMENT_CACHE, diag_cache_start, GL_FALSE);
 			// Restarting vitaShaRK if we released it before
 			if (!is_shark_online)
 				start_shader_compiler();
@@ -1129,7 +1138,9 @@ uint8_t reload_ffp_shaders(SceGxmVertexAttribute *attrs, SceGxmVertexStream *str
 				mask.lights_num, mask.lighting, mask.shading_mode, mask.point_sprite, mask.fast_perspective_correction, mask.srgb_mode);
 #endif
 			uint32_t size = strlen(fshader);
+			uint64_t diag_compile_start = vgl_diag_begin(VGL_SHADER_DIAG_FFP_FRAGMENT_COMPILE);
 			SceGxmProgram *t = shark_compile_shader_extended(fshader, &size, SHARK_FRAGMENT_SHADER, compiler_opts, compiler_fastmath, compiler_fastprecision, compiler_fastint);
+			vgl_diag_end(VGL_SHADER_DIAG_FFP_FRAGMENT_COMPILE, diag_compile_start, t != NULL);
 			ffp_fragment_program = (SceGxmProgram *)vglMalloc(size);
 			vgl_fast_memcpy((void *)ffp_fragment_program, (void *)t, size);
 			shark_clear_output();
@@ -1139,7 +1150,8 @@ uint8_t reload_ffp_shaders(SceGxmVertexAttribute *attrs, SceGxmVertexStream *str
 			sceIoWrite(f, ffp_fragment_program, size);
 			sceIoClose(f);
 		}
-		sceGxmShaderPatcherRegisterProgram(gxm_shader_patcher, ffp_fragment_program, &ffp_fragment_program_id);
+		int diag_register_result = sceGxmShaderPatcherRegisterProgram(gxm_shader_patcher, ffp_fragment_program, &ffp_fragment_program_id);
+		vgl_diag_event(VGL_SHADER_DIAG_FFP_FRAGMENT_REGISTER, diag_register_result == 0);
 		ffp_fragment_unif_buf_size = sceGxmProgramGetDefaultUniformBufferSize(ffp_fragment_program);
 		if (ffp_fragment_unif_buf_size) {
 			ffp_fragment_unif_buf = vglMalloc(ffp_fragment_unif_buf_size);

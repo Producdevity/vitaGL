@@ -65,3 +65,69 @@ they do not reproduce device allocation exhaustion or verify rendered pixels.
 `scene_reset()` still has a separate, pre-existing limitation: it returns no
 status when `sceGxmBeginScene` fails. This change does not add scene recovery or
 retry failed reservations.
+
+
+# Shader first-use diagnostics
+
+```sh
+python3 tests/shader_diagnostics.py
+python3 tests/shader_diagnostics.py --sanitizer thread
+```
+
+This extracts the actual custom compile/cache/link functions, FFP dirty-stage
+cache/compiler branches, vertex patch cache and fragment patch helper. It tests
+cache-enabled and cache-disabled builds, with normal error handling,
+`SKIP_ERROR_HANDLING`, and `LOG_ERRORS`. The default run uses ASan/UBSan.
+`--source-root` selects another checkout; `CC` selects a native compiler.
+
+Covered cases include immediate hits/misses, postponed compile requests,
+postponed vertex/fragment hit combinations and precompiled-stage skipping,
+compiler null results, registration failures, missing-shader/relink exits,
+completion after reflection, FFP dirty/non-dirty paths, vertex table/MRU hits,
+eviction, patch failure/retry, ABI rejection, reset, and owner-thread snapshots
+published through a pthread join. Disabled cases require zero clock reads and
+unchanged counters. Mocked I/O, compiler, registration and allocation counts
+are compared with diagnostics enabled for the immediate, postponed and FFP
+success paths.
+
+The reflection fixture has zero parameters; shader/compiler/GXM and filesystem
+operations are mocked. FFP compiler failure still reaches its pre-existing
+unchecked copy; the fixture intercepts that copy after checking the counter.
+These tests do not claim to fix failure handling, validate cache data, verify
+rendered pixels, or reproduce driver compilation latency.
+
+## API and counter meaning
+
+`vglSetShaderDiagnostics`, `vglResetShaderDiagnostics`, and
+`vglGetShaderDiagnostics` must run on the same GL owner, between GL calls.
+They do not synchronize threads. Enable defaults to false; reset preserves the
+setting. Pass `sizeof(vglShaderDiagnostics)` and
+`VGL_SHADER_DIAGNOSTICS_ABI_VERSION` to get a copy. A size/version mismatch or
+null destination returns false without writing output or changing GL errors.
+An enabled snapshot reads `sceKernelGetProcessTimeWide`; a disabled snapshot has
+`snapshot_us=0`. `available_stages` is a bitmask indexed by stage; the custom
+cache bits are absent without `HAVE_SHADER_CACHE`. Counters are cumulative since
+reset. The first/last frames are `vgl_framecount` at request time and only valid
+when requests is nonzero. Duration maxima are cumulative, not subtractable
+window maxima; reset before a window when a window maximum is needed.
+
+- Cache positive/negative results mean open hit/miss. Time covers the existing
+  lookup plus loading on a hit (including custom deserialization/registration),
+  or the lookup alone on a miss. It does not prove a valid read or shader.
+- Compile results mean the existing vitaShaRK call returned non-null/null.
+  Timing covers that call only, excluding translation, serialization and
+  registration. Custom registration also covers binary-loading APIs.
+- Link requests include missing/relinked returns. Positive results count only
+  reaching the function end; they do not assert driver success. Link time is
+  inclusive of cache, translation and compiler work and must not be added to
+  child times. Existing missing/relink checks and error behavior remain intact.
+- Registration and patch results mean GXM returned zero/nonzero; these stages
+  never read a timer. A patch API request may hit GXM's own cache. Vertex
+  table/MRU hits do not touch diagnostics at all.
+
+The POD contains no shader source identifiers or event history. Cache writes,
+translation, built-in precompiled startup registration and host Vulkan pipeline
+creation are not separately counted/timed. No cache policy, shader flags,
+rendering decision, log emission or allocation is added by diagnostics. The
+feature remains opt-in and requires paired header/library integration before
+runtime validation; these host tests make no performance claim.

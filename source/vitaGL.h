@@ -1279,6 +1279,61 @@ void vglSetSemanticBindingMode(GLenum mode);
 // Sets path where to save shader association data for Razor. If an empty string is supplied, shader association data is disabled. Default value: "".
 void vglSetShaderAssociationPath(const char *path);
 
+#define VGL_SHADER_DIAGNOSTICS_ABI_VERSION 1
+
+typedef enum {
+	VGL_SHADER_DIAG_CUSTOM_VERTEX_CACHE,
+	VGL_SHADER_DIAG_CUSTOM_FRAGMENT_CACHE,
+	VGL_SHADER_DIAG_CUSTOM_VERTEX_COMPILE,
+	VGL_SHADER_DIAG_CUSTOM_FRAGMENT_COMPILE,
+	VGL_SHADER_DIAG_CUSTOM_VERTEX_REGISTER,
+	VGL_SHADER_DIAG_CUSTOM_FRAGMENT_REGISTER,
+	VGL_SHADER_DIAG_CUSTOM_LINK,
+	VGL_SHADER_DIAG_FFP_VERTEX_CACHE,
+	VGL_SHADER_DIAG_FFP_FRAGMENT_CACHE,
+	VGL_SHADER_DIAG_FFP_VERTEX_COMPILE,
+	VGL_SHADER_DIAG_FFP_FRAGMENT_COMPILE,
+	VGL_SHADER_DIAG_FFP_VERTEX_REGISTER,
+	VGL_SHADER_DIAG_FFP_FRAGMENT_REGISTER,
+	VGL_SHADER_DIAG_VERTEX_PATCH,
+	VGL_SHADER_DIAG_FRAGMENT_PATCH,
+	VGL_SHADER_DIAG_STAGE_COUNT
+} vglShaderDiagnosticStage;
+
+// Cache results mean open hit/miss, compile results mean non-null/null, link positive means function end.
+// Register/patch results mean GXM return zero/nonzero; these buckets have no timing.
+// Cache time covers lookup and load on hits; link time includes its child stages. Do not sum them.
+typedef struct {
+	uint64_t requests;
+	uint64_t positive_results;
+	uint64_t negative_results;
+	uint64_t total_us;
+	uint64_t max_us;
+	uint32_t first_frame;
+	uint32_t last_frame;
+} vglShaderDiagnosticStageStats;
+
+typedef struct {
+	uint32_t abi_version;
+	uint32_t size;
+	uint32_t enabled;
+	uint32_t snapshot_frame;
+	uint32_t available_stages; // Bitmask indexed by vglShaderDiagnosticStage.
+	uint32_t reserved;
+	uint64_t snapshot_us;
+	uint64_t compile_requests;
+	uint64_t postponed_requests;
+	uint64_t link_missing_shaders;
+	uint64_t link_relinked;
+	vglShaderDiagnosticStageStats stages[VGL_SHADER_DIAG_STAGE_COUNT];
+} vglShaderDiagnostics;
+
+// Call only on the GL owner thread between GL calls. Enable defaults to false; reset preserves enable.
+void vglSetShaderDiagnostics(GLboolean enable);
+void vglResetShaderDiagnostics(void);
+// Exact size/version required; mismatch leaves output and GL error unchanged. Disabled snapshots have no timestamp.
+GLboolean vglGetShaderDiagnostics(vglShaderDiagnostics *out, uint32_t size, uint32_t abi_version);
+
 // Overloads the shader cache path when HAVE_SHADER_CACHE=1 is used. Must be called before vglInit*. Default value: ux0:data/shader_cache.
 void vglSetShaderCachePath(const char *path);
 

@@ -164,6 +164,7 @@ int vglCreateVertexProgram(SceGxmShaderPatcherId id, const SceGxmVertexAttribute
 	vgl_vcache_stats.gen_calls++;
 #endif
 	int r = sceGxmShaderPatcherCreateVertexProgram(gxm_shader_patcher, id, attr, attr_num, stream, stream_num, prog);
+	vgl_diag_event(VGL_SHADER_DIAG_VERTEX_PATCH, r == 0);
 	if (!r) {
 		uint32_t slot = VERTEX_PROGRAM_CACHE_WAYS;
 		for (uint32_t i = 0; i < VERTEX_PROGRAM_CACHE_WAYS; i++) {

@@ -26,6 +26,7 @@
 #define _SHARED_H_
 #include <vitasdk.h>
 #include "vitaGL.h"
+#include "shader_diagnostics.h"
 
 // Internal constants
 #define TEXTURES_NUM 16384 // Available textures
@@ -467,6 +468,7 @@ static inline __attribute__((always_inline)) void patch_vertex_program(SceGxmSha
 }
 static inline __attribute__((always_inline)) void patch_fragment_program(SceGxmShaderPatcherId id, SceGxmOutputRegisterFormat fmt, SceGxmMultisampleMode msaa_mode, const SceGxmBlendInfo *blend_cfg, const SceGxmProgram *vertex_link, SceGxmFragmentProgram **prog) {
 	int r = sceGxmShaderPatcherCreateFragmentProgram(gxm_shader_patcher, id, fmt, msaa_mode, blend_cfg, vertex_link, prog);
+	vgl_diag_event(VGL_SHADER_DIAG_FRAGMENT_PATCH, r == 0);
 #ifdef LOG_ERRORS
 	if (r) {
 		vgl_log("Fragment shader patching failed (%s) on shader 0x%X.\n", get_gxm_error_literal(r), id);
