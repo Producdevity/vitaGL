@@ -581,6 +581,7 @@ static inline __attribute__((always_inline)) int gpu_get_compressed_mip_offset(i
 	return gpu_get_compressed_mipchain_size(level - 1, width, height, format);
 }
 
+// Compressed transfer storage can be reused or reallocated by the next upload.
 void gpu_alloc_compressed_cube_texture(uint32_t w, uint32_t h, SceGxmTextureFormat format, uint32_t image_size, const void *data, texture *tex, uint8_t src_bpp, GLboolean uncompressed, int index) {
 	// If there's already a texture in passed texture object we first dealloc it
 	if (tex->status == TEX_VALID && tex->faces_counter >= 6) {
@@ -628,7 +629,7 @@ void gpu_alloc_compressed_cube_texture(uint32_t w, uint32_t h, SceGxmTextureForm
 				case SCE_GXM_TEXTURE_FORMAT_UBC2_ABGR:
 				case SCE_GXM_TEXTURE_FORMAT_UBC3_ABGR:
 				case SCE_GXM_TEXTURE_FORMAT_UBC5_GR:
-					if (aligned_width == w && aligned_height == h && h <= 2048 && w <= 2048) {
+					if (w >= 4 && h >= 4 && aligned_width == w && aligned_height == h && h <= 2048 && w <= 2048) {
 #ifdef TEXTURE_UPLOADS_SPEEDHACK
 						void *mapped_src = data;
 #else
@@ -638,6 +639,7 @@ void gpu_alloc_compressed_cube_texture(uint32_t w, uint32_t h, SceGxmTextureForm
 						sceGxmTransferCopy(w / 4, h / 4, 0, 0, SCE_GXM_TRANSFER_COLORKEY_NONE,
 							SCE_GXM_TRANSFER_FORMAT_RAW128, SCE_GXM_TRANSFER_LINEAR, mapped_src, 0, 0, w * 4,
 							SCE_GXM_TRANSFER_FORMAT_RAW128, SCE_GXM_TRANSFER_SWIZZLED, mip_data, 0, 0, w * 4, NULL, 0, NULL);
+						sceGxmTransferFinish();
 					} else {
 						SwizzleTexData128Bpp((uint8_t *)mip_data, (uint8_t *)data, 0, 0, ALIGNBLOCK(w, 4), ALIGNBLOCK(h, 4), ALIGNBLOCK(w, 4), ALIGNBLOCK(MIN(aligned_width, aligned_height), 4));
 					}
@@ -646,7 +648,7 @@ void gpu_alloc_compressed_cube_texture(uint32_t w, uint32_t h, SceGxmTextureForm
 					SwizzleTexDataETC1((uint8_t *)mip_data, (uint8_t *)data, 0, 0, ALIGNBLOCK(w, 4), ALIGNBLOCK(h, 4), ALIGNBLOCK(w, 4), ALIGNBLOCK(MIN(aligned_width, aligned_height), 4));
 					break;
 				case SCE_GXM_TEXTURE_FORMAT_PVRTII2BPP_ABGR:
-					if (aligned_width == w && aligned_height == h && h <= 2048) {
+					if (w >= 8 && h >= 4 && aligned_width == w && aligned_height == h && h <= 2048) {
 #ifdef TEXTURE_UPLOADS_SPEEDHACK
 						void *mapped_src = data;
 #else
@@ -656,12 +658,13 @@ void gpu_alloc_compressed_cube_texture(uint32_t w, uint32_t h, SceGxmTextureForm
 						sceGxmTransferCopy(w / 8, h / 4, 0, 0, SCE_GXM_TRANSFER_COLORKEY_NONE,
 							SCE_GXM_TRANSFER_FORMAT_RAW64, SCE_GXM_TRANSFER_LINEAR, mapped_src, 0, 0, w,
 							SCE_GXM_TRANSFER_FORMAT_RAW64, SCE_GXM_TRANSFER_SWIZZLED, mip_data, 0, 0, w, NULL, 0, NULL);
+						sceGxmTransferFinish();
 					} else {
 						SwizzleTexData64Bpp((uint8_t *)mip_data, (uint8_t *)data, 0, 0, ALIGNBLOCK(w, 8), ALIGNBLOCK(h, 4), ALIGNBLOCK(w, 8), MIN(ALIGNBLOCK(aligned_width, 8), ALIGNBLOCK(aligned_height, 4)));
 					}
 					break;
 				default:
-					if (aligned_width == w && aligned_height == h && h <= 2048) {
+					if (w >= 4 && h >= 4 && aligned_width == w && aligned_height == h && h <= 2048) {
 #ifdef TEXTURE_UPLOADS_SPEEDHACK
 						void *mapped_src = data;
 #else
@@ -671,6 +674,7 @@ void gpu_alloc_compressed_cube_texture(uint32_t w, uint32_t h, SceGxmTextureForm
 						sceGxmTransferCopy(w / 4, h / 4, 0, 0, SCE_GXM_TRANSFER_COLORKEY_NONE,
 							SCE_GXM_TRANSFER_FORMAT_RAW64, SCE_GXM_TRANSFER_LINEAR, mapped_src, 0, 0, w * 2,
 							SCE_GXM_TRANSFER_FORMAT_RAW64, SCE_GXM_TRANSFER_SWIZZLED, mip_data, 0, 0, w * 2, NULL, 0, NULL);
+						sceGxmTransferFinish();
 					} else {
 						SwizzleTexData64Bpp((uint8_t *)mip_data, (uint8_t *)data, 0, 0, ALIGNBLOCK(w, 4), ALIGNBLOCK(h, 4), ALIGNBLOCK(w, 4), ALIGNBLOCK(MIN(aligned_width, aligned_height), 4));
 					}
@@ -772,7 +776,7 @@ void gpu_alloc_compressed_texture(int32_t mip_level, uint32_t w, uint32_t h, Sce
 				case SCE_GXM_TEXTURE_FORMAT_UBC2_ABGR:
 				case SCE_GXM_TEXTURE_FORMAT_UBC3_ABGR:
 				case SCE_GXM_TEXTURE_FORMAT_UBC5_GR:
-					if (aligned_width == w && aligned_height == h && h <= 2048 && w <= 2048) {
+					if (w >= 4 && h >= 4 && aligned_width == w && aligned_height == h && h <= 2048 && w <= 2048) {
 #ifdef TEXTURE_UPLOADS_SPEEDHACK
 						void *mapped_src = data;
 #else
@@ -782,6 +786,7 @@ void gpu_alloc_compressed_texture(int32_t mip_level, uint32_t w, uint32_t h, Sce
 						sceGxmTransferCopy(w / 4, h / 4, 0, 0, SCE_GXM_TRANSFER_COLORKEY_NONE,
 							SCE_GXM_TRANSFER_FORMAT_RAW128, SCE_GXM_TRANSFER_LINEAR, mapped_src, 0, 0, w * 4,
 							SCE_GXM_TRANSFER_FORMAT_RAW128, SCE_GXM_TRANSFER_SWIZZLED, mip_data, 0, 0, w * 4, NULL, 0, NULL);
+						sceGxmTransferFinish();
 					} else {
 						SwizzleTexData128Bpp((uint8_t *)mip_data, (uint8_t *)data, 0, 0, ALIGNBLOCK(w, 4), ALIGNBLOCK(h, 4), ALIGNBLOCK(w, 4), ALIGNBLOCK(MIN(aligned_width, aligned_height), 4));
 					}
@@ -790,7 +795,7 @@ void gpu_alloc_compressed_texture(int32_t mip_level, uint32_t w, uint32_t h, Sce
 					SwizzleTexDataETC1((uint8_t *)mip_data, (uint8_t *)data, 0, 0, ALIGNBLOCK(w, 4), ALIGNBLOCK(h, 4), ALIGNBLOCK(w, 4), ALIGNBLOCK(MIN(aligned_width, aligned_height), 4));
 					break;
 				case SCE_GXM_TEXTURE_FORMAT_PVRTII2BPP_ABGR:
-					if (aligned_width == w && aligned_height == h && h <= 2048) {
+					if (w >= 8 && h >= 4 && aligned_width == w && aligned_height == h && h <= 2048) {
 #ifdef TEXTURE_UPLOADS_SPEEDHACK
 						void *mapped_src = data;
 #else
@@ -800,12 +805,13 @@ void gpu_alloc_compressed_texture(int32_t mip_level, uint32_t w, uint32_t h, Sce
 						sceGxmTransferCopy(w / 8, h / 4, 0, 0, SCE_GXM_TRANSFER_COLORKEY_NONE,
 							SCE_GXM_TRANSFER_FORMAT_RAW64, SCE_GXM_TRANSFER_LINEAR, mapped_src, 0, 0, w,
 							SCE_GXM_TRANSFER_FORMAT_RAW64, SCE_GXM_TRANSFER_SWIZZLED, mip_data, 0, 0, w, NULL, 0, NULL);
+						sceGxmTransferFinish();
 					} else {
 						SwizzleTexData64Bpp((uint8_t *)mip_data, (uint8_t *)data, 0, 0, ALIGNBLOCK(w, 8), ALIGNBLOCK(h, 4), ALIGNBLOCK(w, 8), MIN(ALIGNBLOCK(aligned_width, 8), ALIGNBLOCK(aligned_height, 4)));
 					}
 					break;
 				default:
-					if (aligned_width == w && aligned_height == h && h <= 2048) {
+					if (w >= 4 && h >= 4 && aligned_width == w && aligned_height == h && h <= 2048) {
 #ifdef TEXTURE_UPLOADS_SPEEDHACK
 						void *mapped_src = data;
 #else
@@ -815,6 +821,7 @@ void gpu_alloc_compressed_texture(int32_t mip_level, uint32_t w, uint32_t h, Sce
 						sceGxmTransferCopy(w / 4, h / 4, 0, 0, SCE_GXM_TRANSFER_COLORKEY_NONE,
 							SCE_GXM_TRANSFER_FORMAT_RAW64, SCE_GXM_TRANSFER_LINEAR, mapped_src, 0, 0, w * 2,
 							SCE_GXM_TRANSFER_FORMAT_RAW64, SCE_GXM_TRANSFER_SWIZZLED, mip_data, 0, 0, w * 2, NULL, 0, NULL);
+						sceGxmTransferFinish();
 					} else {
 						SwizzleTexData64Bpp((uint8_t *)mip_data, (uint8_t *)data, 0, 0, ALIGNBLOCK(w, 4), ALIGNBLOCK(h, 4), ALIGNBLOCK(w, 4), MIN(ALIGNBLOCK(aligned_width, 4), ALIGNBLOCK(aligned_height, 4)));
 					}
