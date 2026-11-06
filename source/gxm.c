@@ -353,7 +353,7 @@ void init_gxm(void) {
 	}
 #endif
 
-	sceRazorGpuCaptureEnableSalvage("ux0:data/vitagl_gpucrash.sgx");
+	sceRazorGpuCaptureEnableSalvage(vgl_gpu_crash_path);
 #endif
 
 	// Initializing runtime shader compiler

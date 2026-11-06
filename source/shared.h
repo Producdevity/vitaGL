@@ -301,6 +301,11 @@ extern int NEW_DISPLAY_HEIGHT; // Requested new display height in pixels
 // Fixed-function pipeline shader cache settings
 #define FFP_SHADER_CACHE_MAGIC 31 // This must be increased whenever ffp shader sources or shader mask/combiner mask changes
 
+extern char vgl_ffp_cache_path[256];
+#ifdef HAVE_RAZOR
+extern char vgl_gpu_crash_path[256];
+#endif
+
 // Custom shaders pipeline shader cache settings
 #ifdef HAVE_SHADER_CACHE
 #define SHADER_CACHE_MAGIC 3

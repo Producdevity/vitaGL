@@ -820,9 +820,9 @@ uint8_t reload_ffp_shaders(SceGxmVertexAttribute *attrs, SceGxmVertexStream *str
 	if (ffp_dirty_vert) {
 		char fname[256];
 #ifdef HAVE_HIGH_FFP_TEXUNITS
-		sprintf(fname, "ux0:data/shader_cache/v%d/v/%016llX-%d.gxp", FFP_SHADER_CACHE_MAGIC, vert_shader_mask, WVP_ON_GPU);
+		sprintf(fname, "%s/v/%016llX-%d.gxp", vgl_ffp_cache_path, vert_shader_mask, WVP_ON_GPU);
 #else
-		sprintf(fname, "ux0:data/shader_cache/v%d/v/%08X-%d.gxp", FFP_SHADER_CACHE_MAGIC, vert_shader_mask, WVP_ON_GPU);
+		sprintf(fname, "%s/v/%08X-%d.gxp", vgl_ffp_cache_path, vert_shader_mask, WVP_ON_GPU);
 #endif
 		uint64_t diag_cache_start = vgl_diag_begin(VGL_SHADER_DIAG_FFP_VERTEX_CACHE);
 		SceUID f = sceIoOpen(fname, SCE_O_RDONLY, 0777);
@@ -1047,15 +1047,15 @@ uint8_t reload_ffp_shaders(SceGxmVertexAttribute *attrs, SceGxmVertexStream *str
 		char fname[256];
 #ifndef DISABLE_TEXTURE_COMBINER
 #ifdef HAVE_HIGH_FFP_TEXUNITS
-		sprintf(fname, "ux0:data/shader_cache/v%d/f/%016llX-%016llX-%08X.gxp", FFP_SHADER_CACHE_MAGIC, frag_shader_mask, cmb_mask.raw_high, cmb_mask.raw_low);
+		sprintf(fname, "%s/f/%016llX-%016llX-%08X.gxp", vgl_ffp_cache_path, frag_shader_mask, cmb_mask.raw_high, cmb_mask.raw_low);
 #else
-		sprintf(fname, "ux0:data/shader_cache/v%d/f/%08X-%016llX.gxp", FFP_SHADER_CACHE_MAGIC, frag_shader_mask, cmb_mask.raw);
+		sprintf(fname, "%s/f/%08X-%016llX.gxp", vgl_ffp_cache_path, frag_shader_mask, cmb_mask.raw);
 #endif
 #else
 #ifdef HAVE_HIGH_FFP_TEXUNITS
-		sprintf(fname, "ux0:data/shader_cache/v%d/f/%016llX-0000000000000000.gxp", FFP_SHADER_CACHE_MAGIC, frag_shader_mask);
+		sprintf(fname, "%s/f/%016llX-0000000000000000.gxp", vgl_ffp_cache_path, frag_shader_mask);
 #else
-		sprintf(fname, "ux0:data/shader_cache/v%d/f/%08X-0000000000000000.gxp", FFP_SHADER_CACHE_MAGIC, frag_shader_mask);
+		sprintf(fname, "%s/f/%08X-0000000000000000.gxp", vgl_ffp_cache_path, frag_shader_mask);
 #endif
 #endif
 		uint64_t diag_cache_start = vgl_diag_begin(VGL_SHADER_DIAG_FFP_FRAGMENT_CACHE);

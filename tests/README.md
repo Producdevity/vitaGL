@@ -131,3 +131,21 @@ creation are not separately counted/timed. No cache policy, shader flags,
 rendering decision, log emission or allocation is added by diagnostics. The
 feature remains opt-in and requires paired header/library integration before
 runtime validation; these host tests make no performance claim.
+
+
+## Cache root isolation
+
+`python3 tests/cache_paths.py` extracts the actual cache initializer, public
+setter and all six FFP filename format branches. ASan/UBSan fixtures cover
+FFP-only, custom-cache, texture-cache and combined Razor builds. They verify
+legacy paths and custom-only overrides, isolated directory placement, copied
+1..127-byte input, rejected null/empty/overlong input, post-init rejection,
+and the earlier Razor initialization path. Filesystem/GXM calls are mocked.
+
+`vitaGLCache.h` declares `vglSetCacheRootPath`. Call it only on the GL owner,
+before any `vglInit*`, with an existing parent directory. An accepted root
+wins over `vglSetShaderCachePath` and places caches in `ffp/v31`, `custom/v3`
+and `textures`, with Razor salvage at `gpucrash.sgx`. Unset roots retain the
+original paths. This is configuration, not a runtime cache toggle, and adds
+no synchronization or fallback into another application's cache. Cache
+formats, shader/compiler decisions and error handling remain unchanged.

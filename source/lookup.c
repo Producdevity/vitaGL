@@ -23,6 +23,7 @@
 
 #include "shared.h"
 #include "vitaGL.h"
+#include "vitaGLCache.h"
 
 //#define FAKE_UNRESOLVED_FUNCS // Define this to enable fake bogus mapping in vglGetProcAddress for unimplemented functions
 
@@ -30,6 +31,7 @@ static const struct {
 	const char *name;
 	void *proc;
 } vgl_proctable[] = {
+	{"vglSetCacheRootPath", (void *)vglSetCacheRootPath},
 	// *gl
 	{"glActiveTexture", (void *)glActiveTexture},
 	{"glAlphaFunc", (void *)glAlphaFunc},

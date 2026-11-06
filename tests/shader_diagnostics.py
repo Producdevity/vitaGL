@@ -101,6 +101,7 @@ static int io_hits[2], compiler_fails[2], register_fails[2], patch_failure;
 static int last_stage, compile_calls[2], register_calls[2], read_opens[2], write_opens;
 static int translator_calls, frees, allocations, vertex_patches, fragment_patches, final_reflection;
 static char vgl_shader_cache_path[256]="cache";
+static char vgl_ffp_cache_path[256]="ffp-cache";
 static void *owned[2048];
 static SceGxmProgram compiler_program;
 static SceGxmVertexProgram vertex_program;

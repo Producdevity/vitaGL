@@ -23,8 +23,14 @@
 #include "shared.h"
 #include "texture_callbacks.h"
 #include "vitaGL.h"
+#include "vitaGLCache.h"
 
 static GLboolean vgl_inited = GL_FALSE;
+static char cache_root[128] = {};
+char vgl_ffp_cache_path[256];
+#ifdef HAVE_RAZOR
+char vgl_gpu_crash_path[256] = "ux0:data/vitagl_gpucrash.sgx";
+#endif
 
 extern int unsafe_allocator_counter;
 void *gpu_alloc_mapped_aligned_unsafe_for_cpu(size_t alignment, size_t size);
@@ -201,6 +207,56 @@ void vglUseVramForUSSE(GLboolean usage) {
 	use_vram_for_usse = usage;
 }
 
+static void vgl_init_cache_paths(void) {
+#if defined(HAVE_SHADER_CACHE) || defined(HAVE_TEX_CACHE)
+	char titleid[12];
+	sceAppMgrAppParamGetString(0, 12, titleid, sizeof(titleid));
+#endif
+	char fname[256];
+	if (cache_root[0])
+		sceIoMkdir(cache_root, 0777);
+#ifdef HAVE_TEX_CACHE
+	if (cache_root[0]) {
+		sprintf(vgl_file_cache_path, "%s/textures", cache_root);
+	} else {
+		sceIoMkdir("ux0:data/vgl_cache", 0777);
+		sprintf(vgl_file_cache_path, "ux0:data/vgl_cache/%s", titleid);
+	}
+	sceIoMkdir(vgl_file_cache_path, 0777);
+#endif
+	if (cache_root[0]) {
+		sprintf(fname, "%s/ffp", cache_root);
+		sceIoMkdir(fname, 0777);
+		sprintf(vgl_ffp_cache_path, "%s/ffp/v%d", cache_root, FFP_SHADER_CACHE_MAGIC);
+	} else {
+		sceIoMkdir("ux0:data/shader_cache", 0777);
+		sprintf(vgl_ffp_cache_path, "ux0:data/shader_cache/v%d", FFP_SHADER_CACHE_MAGIC);
+	}
+	sceIoMkdir(vgl_ffp_cache_path, 0777);
+	sprintf(fname, "%s/v", vgl_ffp_cache_path);
+	sceIoMkdir(fname, 0777);
+	sprintf(fname, "%s/f", vgl_ffp_cache_path);
+	sceIoMkdir(fname, 0777);
+#ifdef HAVE_SHADER_CACHE
+	char isolated_custom_root[160];
+	const char *custom_root = shader_cache_root;
+	if (cache_root[0]) {
+		sprintf(isolated_custom_root, "%s/custom", cache_root);
+		custom_root = isolated_custom_root;
+	} else if (!shader_cache_root[0]) {
+		sprintf(shader_cache_root, "ux0:data/shader_cache/%s", titleid);
+	}
+	sceIoMkdir(custom_root, 0777);
+	sprintf(vgl_shader_cache_path, "%s/v%d", custom_root, SHADER_CACHE_MAGIC);
+	if (!sceIoMkdir(vgl_shader_cache_path, 0777)) {
+		int fname_len = sprintf(fname, "%s/v", vgl_shader_cache_path);
+		sceIoMkdir(fname, 0777);
+		fname[fname_len - 1] = 'f';
+		sceIoMkdir(fname, 0777);
+	}
+#endif
+}
+
 GLboolean vglInitWithCustomSizes(int pool_size, int width, int height, int ram_pool_size, int cdram_pool_size, int phycont_pool_size, int cdlg_pool_size, SceGxmMultisampleMode msaa) {
 	// Check if vitaGL has been already inited
 	if (vgl_inited) {
@@ -212,36 +268,7 @@ GLboolean vglInitWithCustomSizes(int pool_size, int width, int height, int ram_p
 	vgl_is_main_thread = GL_TRUE;
 #endif
 
-#if defined(HAVE_SHADER_CACHE) || defined(HAVE_TEX_CACHE)
-	char titleid[12];
-	sceAppMgrAppParamGetString(0, 12, titleid , 256);
-#endif
-#ifdef HAVE_TEX_CACHE
-	sceIoMkdir("ux0:data/vgl_cache", 0777);
-	sprintf(vgl_file_cache_path, "ux0:data/vgl_cache/%s", titleid);
-	sceIoMkdir(vgl_file_cache_path, 0777);
-#endif
-	sceIoMkdir("ux0:data/shader_cache", 0777);
-	char fname[256];
-	sprintf(fname, "ux0:data/shader_cache/v%d", FFP_SHADER_CACHE_MAGIC);
-	sceIoMkdir(fname, 0777);
-	sprintf(fname, "ux0:data/shader_cache/v%d/v", FFP_SHADER_CACHE_MAGIC);
-	sceIoMkdir(fname, 0777);
-	sprintf(fname, "ux0:data/shader_cache/v%d/f", FFP_SHADER_CACHE_MAGIC);
-	sceIoMkdir(fname, 0777);
-#ifdef HAVE_SHADER_CACHE
-	if (!shader_cache_root[0]) {
-		sprintf(shader_cache_root, "ux0:data/shader_cache/%s", titleid);
-	}
-	sceIoMkdir(shader_cache_root, 0777);
-	sprintf(vgl_shader_cache_path, "%s/v%d", shader_cache_root, SHADER_CACHE_MAGIC);
-	if (!sceIoMkdir(vgl_shader_cache_path, 0777)) {
-		int fname_len = sprintf(fname, "%s/v", vgl_shader_cache_path);
-		sceIoMkdir(fname, 0777);
-		fname[fname_len - 1] = 'f';
-		sceIoMkdir(fname, 0777);
-	}
-#endif
+	vgl_init_cache_paths();
 	// Check if framebuffer size is valid
 	GLboolean res_fallback = GL_FALSE;
 	int max_w = width, max_h = height;
@@ -541,6 +568,10 @@ GLboolean vglInitWithCustomSizes(int pool_size, int width, int height, int ram_p
 }
 
 GLboolean vglInitWithCustomThreshold(int pool_size, int width, int height, int ram_threshold, int cdram_threshold, int phycont_threshold, int cdlg_threshold, SceGxmMultisampleMode msaa) {
+#ifdef HAVE_RAZOR
+	if (cache_root[0])
+		sceIoMkdir(cache_root, 0777);
+#endif
 	// Initializing sceGxm
 	init_gxm();
 
@@ -829,6 +860,16 @@ void vglPhycontMemLazyInit(size_t size) {
 #else
 	vgl_log("%s:%d %s: This function is not compatible with PHYCONT_ON_DEMAND=1 flag.\n", __FILE__, __LINE__, __func__);
 #endif
+}
+
+GLboolean vglSetCacheRootPath(const char *path) {
+	if (vgl_inited || !path || !path[0] || strlen(path) >= sizeof(cache_root))
+		return GL_FALSE;
+	strcpy(cache_root, path);
+#ifdef HAVE_RAZOR
+	sprintf(vgl_gpu_crash_path, "%s/gpucrash.sgx", cache_root);
+#endif
+	return GL_TRUE;
 }
 
 void vglSetShaderCachePath(const char *path) {
