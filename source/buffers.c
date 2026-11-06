@@ -359,6 +359,12 @@ void glDeleteBuffers(GLsizei n, const GLuint *gl_buffers) {
 	}
 }
 
+static GLboolean vgl_static_vbo_ram = GL_FALSE;
+
+void vglSetStaticVboRam(GLboolean enable) {
+	vgl_static_vbo_ram = enable ? GL_TRUE : GL_FALSE;
+}
+
 inline void glNamedBufferData(GLuint buffer, GLsizei size, const void *data, GLenum usage) {
 	THREAD_SAFE()
 
@@ -398,7 +404,7 @@ inline void glNamedBufferData(GLuint buffer, GLsizei size, const void *data, GLe
 #if defined(HAVE_SCRATCH_MEMORY) && !defined(DISABLE_CIRCULAR_POOL)
 		gpu_buf->scratch = GL_FALSE;
 #endif
-		gpu_buf->alloc_func = gpu_alloc_mapped_for_gpu;
+		gpu_buf->alloc_func = vgl_static_vbo_ram ? gpu_alloc_mapped_for_cpu : gpu_alloc_mapped_for_gpu;
 		break;
 	}
 

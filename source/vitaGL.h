@@ -1162,6 +1162,9 @@ void vglAddSemanticBindingHint(const GLchar *const *varying, GLenum type);
 // Alloc memory from vitaGL internal memory pools. Needs to be freed with vglFree.
 void *vglAlloc(uint32_t size, vglMemType type);
 
+// Prefer the RAM pool for subsequent static buffer allocations. Disabled by default.
+void vglSetStaticVboRam(GLboolean enable);
+
 // Alloc temporary memory from vitaGL internal scratch pool. Allocation is extremely fast if NO_CIRCULAR_POOL is not used. Memory lifetime is guaranteed for 3 frames.
 void *vglAllocFromScratch(size_t size);
 
