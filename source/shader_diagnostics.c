@@ -13,7 +13,8 @@
 vglShaderDiagnostics vgl_shader_diagnostics = {
 	.abi_version = VGL_SHADER_DIAGNOSTICS_ABI_VERSION,
 	.size = sizeof(vglShaderDiagnostics),
-	.available_stages = VGL_DIAG_AVAILABLE_STAGES
+	.available_stages = VGL_DIAG_AVAILABLE_STAGES,
+	.timed_stages = VGL_SHADER_DIAGNOSTICS_TIMED_STAGES & VGL_DIAG_AVAILABLE_STAGES
 };
 
 void vglSetShaderDiagnostics(GLboolean enable) {
@@ -26,6 +27,7 @@ void vglResetShaderDiagnostics(void) {
 	vgl_shader_diagnostics.abi_version = VGL_SHADER_DIAGNOSTICS_ABI_VERSION;
 	vgl_shader_diagnostics.size = sizeof(vglShaderDiagnostics);
 	vgl_shader_diagnostics.available_stages = VGL_DIAG_AVAILABLE_STAGES;
+	vgl_shader_diagnostics.timed_stages = VGL_SHADER_DIAGNOSTICS_TIMED_STAGES & VGL_DIAG_AVAILABLE_STAGES;
 	vgl_shader_diagnostics.enabled = enabled;
 }
 

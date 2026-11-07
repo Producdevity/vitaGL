@@ -238,10 +238,13 @@ static void api_cases(void) {
  assert(!vgl_shader_diagnostics.enabled); assert(!clock_reads);
  assert(!vglGetShaderDiagnostics(&out,sizeof(out)-1,VGL_SHADER_DIAGNOSTICS_ABI_VERSION));
  assert(!vglGetShaderDiagnostics(&out,sizeof(out),VGL_SHADER_DIAGNOSTICS_ABI_VERSION+1));
+ assert(!vglGetShaderDiagnostics(&out,sizeof(out),VGL_SHADER_DIAGNOSTICS_ABI_VERSION-1));
  assert(!vglGetShaderDiagnostics(NULL,sizeof(out),VGL_SHADER_DIAGNOSTICS_ABI_VERSION));
  assert(!memcmp(&out,&unchanged,sizeof(out)) && !clock_reads);
  assert(vglGetShaderDiagnostics(&out,sizeof(out),VGL_SHADER_DIAGNOSTICS_ABI_VERSION));
- assert(!out.enabled && !out.snapshot_us && out.size==sizeof(out) && !out.reserved);
+ assert(!out.enabled && !out.snapshot_us && out.size==sizeof(out));
+ assert(out.timed_stages==(VGL_SHADER_DIAGNOSTICS_TIMED_STAGES & out.available_stages));
+ assert(sizeof(out)==784);
 #ifdef HAVE_SHADER_CACHE
  assert(out.available_stages==((1u << VGL_SHADER_DIAG_STAGE_COUNT)-1));
 #else
@@ -255,6 +258,7 @@ static void api_cases(void) {
  assert(out.enabled && out.snapshot_us==1 && out.snapshot_frame==99);
  assert(out.stages[VGL_SHADER_DIAG_VERTEX_PATCH].first_frame==42 && out.stages[VGL_SHADER_DIAG_VERTEX_PATCH].last_frame==99);
  vglResetShaderDiagnostics(); assert(vgl_shader_diagnostics.enabled); bucket(VGL_SHADER_DIAG_VERTEX_PATCH,0,0,0,0);
+ assert(vgl_shader_diagnostics.timed_stages==(VGL_SHADER_DIAGNOSTICS_TIMED_STAGES & vgl_shader_diagnostics.available_stages));
  vglSetShaderDiagnostics(GL_FALSE); uint64_t clocks=clock_reads;
  assert(vglGetShaderDiagnostics(&out,sizeof(out),VGL_SHADER_DIAGNOSTICS_ABI_VERSION)); assert(!out.snapshot_us && clock_reads==clocks);
 }
@@ -364,8 +368,8 @@ static void patch_cases(int enabled) {
  if(enabled) bucket(VGL_SHADER_DIAG_VERTEX_PATCH,8,6,2,0); else disabled();
  SceGxmFragmentProgram *f=NULL; patch_failure=0;
  patch_fragment_program(1,0,0,NULL,NULL,&f); patch_failure=1;
- patch_fragment_program(1,0,0,NULL,NULL,&f); assert(fragment_patches==2 && !clock_reads);
- if(enabled) bucket(VGL_SHADER_DIAG_FRAGMENT_PATCH,2,1,1,0); else disabled();
+ patch_fragment_program(1,0,0,NULL,NULL,&f); assert(fragment_patches==2 && clock_reads==(enabled ? 4u : 0u));
+ if(enabled) bucket(VGL_SHADER_DIAG_FRAGMENT_PATCH,2,1,1,1); else disabled();
 }
 static void *snapshot_owner(void *out) {
  vglSetShaderDiagnostics(GL_TRUE); vglResetShaderDiagnostics(); vgl_framecount=123;

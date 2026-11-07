@@ -1279,7 +1279,7 @@ void vglSetSemanticBindingMode(GLenum mode);
 // Sets path where to save shader association data for Razor. If an empty string is supplied, shader association data is disabled. Default value: "".
 void vglSetShaderAssociationPath(const char *path);
 
-#define VGL_SHADER_DIAGNOSTICS_ABI_VERSION 1
+#define VGL_SHADER_DIAGNOSTICS_ABI_VERSION 2
 
 typedef enum {
 	VGL_SHADER_DIAG_CUSTOM_VERTEX_CACHE,
@@ -1300,8 +1300,10 @@ typedef enum {
 	VGL_SHADER_DIAG_STAGE_COUNT
 } vglShaderDiagnosticStage;
 
+#define VGL_SHADER_DIAGNOSTICS_TIMED_STAGES 0x47cfu
+
 // Cache results mean open hit/miss, compile results mean non-null/null, link positive means function end.
-// Register/patch results mean GXM return zero/nonzero; these buckets have no timing.
+// Register/patch results mean GXM return zero/nonzero; timed_stages identifies measured buckets.
 // Cache time covers lookup and load on hits; link time includes its child stages. Do not sum them.
 typedef struct {
 	uint64_t requests;
@@ -1319,7 +1321,7 @@ typedef struct {
 	uint32_t enabled;
 	uint32_t snapshot_frame;
 	uint32_t available_stages; // Bitmask indexed by vglShaderDiagnosticStage.
-	uint32_t reserved;
+	uint32_t timed_stages; // Timed stages intersected with available_stages.
 	uint64_t snapshot_us;
 	uint64_t compile_requests;
 	uint64_t postponed_requests;

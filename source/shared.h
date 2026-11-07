@@ -472,8 +472,9 @@ static inline __attribute__((always_inline)) void patch_vertex_program(SceGxmSha
 #endif
 }
 static inline __attribute__((always_inline)) void patch_fragment_program(SceGxmShaderPatcherId id, SceGxmOutputRegisterFormat fmt, SceGxmMultisampleMode msaa_mode, const SceGxmBlendInfo *blend_cfg, const SceGxmProgram *vertex_link, SceGxmFragmentProgram **prog) {
+	uint64_t start = vgl_diag_begin(VGL_SHADER_DIAG_FRAGMENT_PATCH);
 	int r = sceGxmShaderPatcherCreateFragmentProgram(gxm_shader_patcher, id, fmt, msaa_mode, blend_cfg, vertex_link, prog);
-	vgl_diag_event(VGL_SHADER_DIAG_FRAGMENT_PATCH, r == 0);
+	vgl_diag_end(VGL_SHADER_DIAG_FRAGMENT_PATCH, start, r == 0);
 #ifdef LOG_ERRORS
 	if (r) {
 		vgl_log("Fragment shader patching failed (%s) on shader 0x%X.\n", get_gxm_error_literal(r), id);
