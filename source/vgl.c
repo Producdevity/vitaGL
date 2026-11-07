@@ -23,11 +23,25 @@
 #include "shared.h"
 #include "texture_callbacks.h"
 #include "vitaGL.h"
+#include "vitaGLCache.h"
 
 static GLboolean vgl_inited = GL_FALSE;
+static char cache_root[128] = {};
+char vgl_ffp_cache_path[256];
+#ifdef HAVE_RAZOR
+char vgl_gpu_crash_path[256] = "ux0:data/vitagl_gpucrash.sgx";
+#endif
+
+extern int unsafe_allocator_counter;
+void *gpu_alloc_mapped_aligned_unsafe_for_cpu(size_t alignment, size_t size);
 
 #ifdef HAVE_SHADER_CACHE
 static char shader_cache_root[128] = {};
+#endif
+
+#ifdef HAVE_PROFILING
+size_t max_vcache_size = 0;
+size_t max_fcache_size = 0;
 #endif
 
 #ifdef HAVE_SOFTFP_ABI
@@ -71,8 +85,33 @@ SceGxmFragmentProgram *blit_fragment_program_float_patched;
 const SceGxmProgramParameter *blit_position;
 const SceGxmProgramParameter *blit_texcoord;
 
+#ifdef HAVE_ACCURATE_MSAA
+static SceGxmFragmentProgram *builtin_programs[3][4];
+static SceGxmMultisampleMode curr_msaa_mode;
+void refresh_builtin_programs(SceGxmMultisampleMode mode) {
+	if (mode != curr_msaa_mode) {
+		clear_fragment_program_patched = builtin_programs[mode][0];
+		clear_fragment_program_float_patched = builtin_programs[mode][1];
+		blit_fragment_program_patched = builtin_programs[mode][2];
+		blit_fragment_program_float_patched = builtin_programs[mode][3];
+		curr_msaa_mode = mode;
+	}
+}
+#endif
+
 vector4f *clear_vertices = NULL; // Memblock starting address for clear screen vertices
 vector3f *depth_vertices = NULL; // Memblock starting address for depth clear screen vertices
+SceGxmPrecomputedVertexState scissor_clear_vertex_state; // Precomputed vertex state for the fullscreen mask clear
+SceGxmPrecomputedDraw clear_draw_state; // Precomputed draw state for fullscreen clear draws
+SceGxmPrecomputedDraw blit_draw_state; // Precomputed draw state for framebuffer blits
+uint32_t clear_position_offset;
+uint32_t clear_depth_offset;
+uint32_t blit_position_offset;
+uint32_t blit_texcoord_offset;
+static void *scissor_clear_vertex_state_mem = NULL;
+static void *scissor_clear_uniform_buffer = NULL;
+static void *clear_draw_state_mem = NULL;
+static void *blit_draw_state_mem = NULL;
 
 // sceGxm viewport setup (NOTE: origin is on center screen)
 float x_port = 480.0f;
@@ -104,6 +143,12 @@ uint16_t *default_quads_idx_ptr; // sceGxm mapped progressive indices buffer for
 uint16_t *default_line_strips_idx_ptr; // sceGxm mapped progressive indices buffer for line strips
 
 // Internal functions
+void update_scissor_test_uniforms(void) {
+	const float scissor_depth = 1.0f;
+	vglSetUniformData((uint8_t *)scissor_clear_uniform_buffer + clear_position_offset, SCE_GXM_PARAMETER_TYPE_F32, 0, 1, 4, &clear_vertices->x, SCE_GXM_PARAMETER_TYPE_F32);
+	vglSetUniformData((uint8_t *)scissor_clear_uniform_buffer + clear_depth_offset, SCE_GXM_PARAMETER_TYPE_F32, 0, 1, 1, &scissor_depth, SCE_GXM_PARAMETER_TYPE_F32);
+}
+
 #ifndef DISABLE_CIRCULAR_POOL
 #define CIRCULAR_POOL_SIZE_DEF (32 * 1024 * 1024) // Default size in bytes for the circular vertex pool
 #ifdef HAVE_SCRATCH_MEMORY
@@ -135,6 +180,12 @@ uint8_t *vgl_reserve_data_pool(uint32_t size) {
 		mark_as_dirty(res);
 	}
 #else
+#ifdef LOG_ERRORS
+	size_t pool_size = (size_t)circular_data_pool_limit - (size_t)circular_data_pool;
+	if (size > pool_size) {
+		vgl_log("%s:%d Attempting to alloc %u bytes in the circular pool but the pool is only %u bytes. You must increase its size with vglSetCircularPoolSize.\n", __FILE__, __LINE__, size, pool_size);
+	}
+#endif
 	uint8_t *res = circular_data_pool_ptr;
 	circular_data_pool_ptr += size;
 	if (circular_data_pool_ptr > circular_data_pool_limit) {
@@ -156,6 +207,56 @@ void vglUseVramForUSSE(GLboolean usage) {
 	use_vram_for_usse = usage;
 }
 
+static void vgl_init_cache_paths(void) {
+#if defined(HAVE_SHADER_CACHE) || defined(HAVE_TEX_CACHE)
+	char titleid[12];
+	sceAppMgrAppParamGetString(0, 12, titleid, sizeof(titleid));
+#endif
+	char fname[256];
+	if (cache_root[0])
+		sceIoMkdir(cache_root, 0777);
+#ifdef HAVE_TEX_CACHE
+	if (cache_root[0]) {
+		sprintf(vgl_file_cache_path, "%s/textures", cache_root);
+	} else {
+		sceIoMkdir("ux0:data/vgl_cache", 0777);
+		sprintf(vgl_file_cache_path, "ux0:data/vgl_cache/%s", titleid);
+	}
+	sceIoMkdir(vgl_file_cache_path, 0777);
+#endif
+	if (cache_root[0]) {
+		sprintf(fname, "%s/ffp", cache_root);
+		sceIoMkdir(fname, 0777);
+		sprintf(vgl_ffp_cache_path, "%s/ffp/v%d", cache_root, FFP_SHADER_CACHE_MAGIC);
+	} else {
+		sceIoMkdir("ux0:data/shader_cache", 0777);
+		sprintf(vgl_ffp_cache_path, "ux0:data/shader_cache/v%d", FFP_SHADER_CACHE_MAGIC);
+	}
+	sceIoMkdir(vgl_ffp_cache_path, 0777);
+	sprintf(fname, "%s/v", vgl_ffp_cache_path);
+	sceIoMkdir(fname, 0777);
+	sprintf(fname, "%s/f", vgl_ffp_cache_path);
+	sceIoMkdir(fname, 0777);
+#ifdef HAVE_SHADER_CACHE
+	char isolated_custom_root[160];
+	const char *custom_root = shader_cache_root;
+	if (cache_root[0]) {
+		sprintf(isolated_custom_root, "%s/custom", cache_root);
+		custom_root = isolated_custom_root;
+	} else if (!shader_cache_root[0]) {
+		sprintf(shader_cache_root, "ux0:data/shader_cache/%s", titleid);
+	}
+	sceIoMkdir(custom_root, 0777);
+	sprintf(vgl_shader_cache_path, "%s/v%d", custom_root, SHADER_CACHE_MAGIC);
+	if (!sceIoMkdir(vgl_shader_cache_path, 0777)) {
+		int fname_len = sprintf(fname, "%s/v", vgl_shader_cache_path);
+		sceIoMkdir(fname, 0777);
+		fname[fname_len - 1] = 'f';
+		sceIoMkdir(fname, 0777);
+	}
+#endif
+}
+
 GLboolean vglInitWithCustomSizes(int pool_size, int width, int height, int ram_pool_size, int cdram_pool_size, int phycont_pool_size, int cdlg_pool_size, SceGxmMultisampleMode msaa) {
 	// Check if vitaGL has been already inited
 	if (vgl_inited) {
@@ -167,34 +268,7 @@ GLboolean vglInitWithCustomSizes(int pool_size, int width, int height, int ram_p
 	vgl_is_main_thread = GL_TRUE;
 #endif
 
-#if defined(HAVE_SHADER_CACHE) || defined(HAVE_TEX_CACHE)
-	char titleid[12];
-	sceAppMgrAppParamGetString(0, 12, titleid , 256);
-#endif
-#ifdef HAVE_TEX_CACHE
-	sceIoMkdir("ux0:data/vgl_cache", 0777);
-	sprintf(vgl_file_cache_path, "ux0:data/vgl_cache/%s", titleid);
-	sceIoMkdir(vgl_file_cache_path, 0777);
-#endif
-	sceIoMkdir("ux0:data/shader_cache", 0777);
-	char fname[256];
-	sprintf(fname, "ux0:data/shader_cache/v%d", FFP_SHADER_CACHE_MAGIC);
-	sceIoMkdir(fname, 0777);
-	sprintf(fname, "ux0:data/shader_cache/v%d/v", FFP_SHADER_CACHE_MAGIC);
-	sceIoMkdir(fname, 0777);
-	sprintf(fname, "ux0:data/shader_cache/v%d/f", FFP_SHADER_CACHE_MAGIC);
-	sceIoMkdir(fname, 0777);
-#ifdef HAVE_SHADER_CACHE
-	if (!shader_cache_root[0])
-		sprintf(shader_cache_root, "ux0:data/shader_cache/%s", titleid);
-	sceIoMkdir(shader_cache_root, 0777);
-	sprintf(vgl_shader_cache_path, "%s/v%d", shader_cache_root, SHADER_CACHE_MAGIC);
-	sceIoMkdir(vgl_shader_cache_path, 0777);
-	sprintf(fname, "%s/v", vgl_shader_cache_path);
-	sceIoMkdir(fname, 0777);
-	sprintf(fname, "%s/f", vgl_shader_cache_path);
-	sceIoMkdir(fname, 0777);
-#endif
+	vgl_init_cache_paths();
 	// Check if framebuffer size is valid
 	GLboolean res_fallback = GL_FALSE;
 	int max_w = width, max_h = height;
@@ -272,9 +346,21 @@ GLboolean vglInitWithCustomSizes(int pool_size, int width, int height, int ram_p
 	clear_position = sceGxmProgramFindParameterByName(gxm_program_clear_v, "position");
 	clear_depth = sceGxmProgramFindParameterByName(gxm_program_clear_v, "u_clear_depth");
 	clear_color = sceGxmProgramFindParameterByName(gxm_program_clear_f, "u_clear_color");
-	{ patch_vertex_program(gxm_shader_patcher, clear_vertex_id, NULL, 0, NULL, 0, &clear_vertex_program_patched); }
-	{ patch_fragment_program(gxm_shader_patcher, clear_fragment_id, SCE_GXM_OUTPUT_REGISTER_FORMAT_UCHAR4, msaa_mode, NULL, NULL, &clear_fragment_program_patched); }
-	{ patch_fragment_program(gxm_shader_patcher, clear_fragment_id, SCE_GXM_OUTPUT_REGISTER_FORMAT_HALF4, msaa_mode, NULL, NULL, &clear_fragment_program_float_patched); }
+	clear_position_offset = sceGxmProgramParameterGetResourceIndex(clear_position) * 4;
+	clear_depth_offset = sceGxmProgramParameterGetResourceIndex(clear_depth) * 4;
+	{ patch_vertex_program(clear_vertex_id, NULL, 0, NULL, 0, &clear_vertex_program_patched); }
+	{ patch_fragment_program(clear_fragment_id, SCE_GXM_OUTPUT_REGISTER_FORMAT_UCHAR4, msaa_mode, NULL, NULL, &clear_fragment_program_patched); }
+	{ patch_fragment_program(clear_fragment_id, SCE_GXM_OUTPUT_REGISTER_FORMAT_HALF4, msaa_mode, NULL, NULL, &clear_fragment_program_float_patched); }
+
+	// Prepare precomputed data for scissor test region update draws
+	scissor_clear_uniform_buffer = gpu_alloc_mapped_for_cpu(sceGxmProgramGetDefaultUniformBufferSize(gxm_program_clear_v));
+	update_scissor_test_uniforms();
+	scissor_clear_vertex_state_mem = gpu_alloc_mapped_for_cpu(sceGxmGetPrecomputedVertexStateSize(clear_vertex_program_patched));
+	sceGxmPrecomputedVertexStateInit(&scissor_clear_vertex_state, clear_vertex_program_patched, scissor_clear_vertex_state_mem);
+	sceGxmPrecomputedVertexStateSetDefaultUniformBuffer(&scissor_clear_vertex_state, scissor_clear_uniform_buffer);
+	clear_draw_state_mem = gpu_alloc_mapped_for_cpu(sceGxmGetPrecomputedDrawSize(clear_vertex_program_patched));
+	sceGxmPrecomputedDrawInit(&clear_draw_state, clear_vertex_program_patched, clear_draw_state_mem);
+	sceGxmPrecomputedDrawSetParams(&clear_draw_state, SCE_GXM_PRIMITIVE_TRIANGLE_FAN, SCE_GXM_INDEX_FORMAT_U16, depth_clear_indices, 4);
 
 #ifndef SKIP_SPLASHSCREEN
 	if (!system_app_mode)
@@ -289,21 +375,31 @@ GLboolean vglInitWithCustomSizes(int pool_size, int width, int height, int ram_p
 
 	blit_position = sceGxmProgramFindParameterByName(gxm_program_blit_v, "position");
 	blit_texcoord = sceGxmProgramFindParameterByName(gxm_program_blit_v, "texcoord");
-		
-	SceGxmVertexAttribute blit_attrs[2];
-	SceGxmVertexStream blit_streams[1];
-	blit_attrs[0].offset = 0;
-	blit_attrs[1].offset = 8 * sizeof(float);
-	blit_attrs[0].format = blit_attrs[1].format = SCE_GXM_ATTRIBUTE_FORMAT_F32;
-	blit_attrs[0].componentCount = blit_attrs[1].componentCount = 2;
-	blit_streams[0].stride = 2 * sizeof(float);
-	blit_attrs[0].regIndex = sceGxmProgramParameterGetResourceIndex(blit_position);
-	blit_attrs[1].regIndex = sceGxmProgramParameterGetResourceIndex(blit_texcoord);
-	blit_attrs[0].streamIndex = blit_attrs[1].streamIndex = 0;
-	blit_streams[0].indexSource = blit_streams[1].indexSource = SCE_GXM_INDEX_SOURCE_INDEX_16BIT;
-	{ patch_vertex_program(gxm_shader_patcher, blit_vertex_id, blit_attrs, 2, blit_streams, 1, &blit_vertex_program_patched); }
-	{ patch_fragment_program(gxm_shader_patcher, blit_fragment_id, SCE_GXM_OUTPUT_REGISTER_FORMAT_UCHAR4, msaa_mode, NULL, NULL, &blit_fragment_program_patched); }
-	{ patch_fragment_program(gxm_shader_patcher, blit_fragment_id, SCE_GXM_OUTPUT_REGISTER_FORMAT_HALF4, msaa_mode, NULL, NULL, &blit_fragment_program_float_patched); }
+	blit_position_offset = sceGxmProgramParameterGetResourceIndex(blit_position) * 4;
+	blit_texcoord_offset = sceGxmProgramParameterGetResourceIndex(blit_texcoord) * 4;
+	{ patch_vertex_program(blit_vertex_id, NULL, 0, NULL, 0, &blit_vertex_program_patched); }
+	{ patch_fragment_program(blit_fragment_id, SCE_GXM_OUTPUT_REGISTER_FORMAT_UCHAR4, msaa_mode, NULL, NULL, &blit_fragment_program_patched); }
+	{ patch_fragment_program(blit_fragment_id, SCE_GXM_OUTPUT_REGISTER_FORMAT_HALF4, msaa_mode, NULL, NULL, &blit_fragment_program_float_patched); }
+	blit_draw_state_mem = gpu_alloc_mapped_for_cpu(sceGxmGetPrecomputedDrawSize(blit_vertex_program_patched));
+	sceGxmPrecomputedDrawInit(&blit_draw_state, blit_vertex_program_patched, blit_draw_state_mem);
+	sceGxmPrecomputedDrawSetParams(&blit_draw_state, SCE_GXM_PRIMITIVE_TRIANGLE_FAN, SCE_GXM_INDEX_FORMAT_U16, depth_clear_indices, 4);
+
+#ifdef HAVE_ACCURATE_MSAA
+	curr_msaa_mode = msaa_mode;
+	for (int i = 0; i < 3; i++) {
+		if (i == msaa_mode) {
+			builtin_programs[i][0] = clear_fragment_program_patched;
+			builtin_programs[i][1] = clear_fragment_program_float_patched;
+			builtin_programs[i][2] = blit_fragment_program_patched;
+			builtin_programs[i][3] = blit_fragment_program_float_patched;
+		} else {
+			{ patch_fragment_program(clear_fragment_id, SCE_GXM_OUTPUT_REGISTER_FORMAT_UCHAR4, i, NULL, NULL, &builtin_programs[i][0]); }
+			{ patch_fragment_program(clear_fragment_id, SCE_GXM_OUTPUT_REGISTER_FORMAT_HALF4, i, NULL, NULL, &builtin_programs[i][1]); }
+			{ patch_fragment_program(blit_fragment_id, SCE_GXM_OUTPUT_REGISTER_FORMAT_UCHAR4, i, NULL, NULL, &builtin_programs[i][2]); }
+			{ patch_fragment_program(blit_fragment_id, SCE_GXM_OUTPUT_REGISTER_FORMAT_HALF4, i, NULL, NULL, &builtin_programs[i][3]); }
+		}
+    }
+#endif
 
 	sceGxmSetTwoSidedEnable(gxm_context, SCE_GXM_TWO_SIDED_ENABLED);
 
@@ -404,86 +500,6 @@ GLboolean vglInitWithCustomSizes(int pool_size, int width, int height, int ram_p
 		default_quads_idx_ptr[i * 6 + 5] = i * 4 + 3;
 	}
 
-	// Init default vertex attributes configurations
-	for (int i = 0; i < FFP_VERTEX_ATTRIBS_NUM; i++) {
-		// Textureless variant
-		if (i < FFP_VERTEX_ATTRIBS_NUM - 2) {
-			legacy_nt_vertex_attrib_config[i].streamIndex = i;
-			legacy_nt_vertex_attrib_config[i].format = SCE_GXM_ATTRIBUTE_FORMAT_F32;
-			legacy_nt_vertex_stream_config[i].stride = sizeof(float) * LEGACY_NT_VERTEX_STRIDE;
-			legacy_nt_vertex_stream_config[i].indexSource = SCE_GXM_INDEX_SOURCE_INDEX_16BIT;
-		}
-
-		// Single Texture variant
-		if (i < FFP_VERTEX_ATTRIBS_NUM - 1) {
-			legacy_vertex_attrib_config[i].streamIndex = i;
-			legacy_vertex_attrib_config[i].format = SCE_GXM_ATTRIBUTE_FORMAT_F32;
-			legacy_vertex_stream_config[i].stride = sizeof(float) * LEGACY_VERTEX_STRIDE;
-			legacy_vertex_stream_config[i].indexSource = SCE_GXM_INDEX_SOURCE_INDEX_16BIT;
-		}
-
-		// Multi Texture variant
-		legacy_mt_vertex_attrib_config[i].streamIndex = i;
-		legacy_mt_vertex_attrib_config[i].format = SCE_GXM_ATTRIBUTE_FORMAT_F32;
-		legacy_mt_vertex_stream_config[i].stride = sizeof(float) * LEGACY_MT_VERTEX_STRIDE;
-		legacy_mt_vertex_stream_config[i].indexSource = SCE_GXM_INDEX_SOURCE_INDEX_16BIT;
-
-		// Non-immediate mode variant
-		ffp_vertex_attrib_config[i].streamIndex = i;
-		ffp_vertex_attrib_config[i].offset = 0;
-		ffp_vertex_attrib_config[i].componentCount = 4;
-		ffp_vertex_attrib_config[i].format = SCE_GXM_ATTRIBUTE_FORMAT_F32;
-		ffp_vertex_stream_config[i].indexSource = SCE_GXM_INDEX_SOURCE_INDEX_16BIT;
-	}
-
-	// Textureless Variant
-	legacy_nt_vertex_attrib_config[0].offset = 0; // Position
-	legacy_nt_vertex_attrib_config[1].offset = sizeof(float) * 3; // Color/Ambient
-	legacy_nt_vertex_attrib_config[2].offset = sizeof(float) * 7; // Diffuse
-	legacy_nt_vertex_attrib_config[3].offset = sizeof(float) * 11; // Specular
-	legacy_nt_vertex_attrib_config[4].offset = sizeof(float) * 15; // Emission
-	legacy_nt_vertex_attrib_config[5].offset = sizeof(float) * 19; // Normals
-	legacy_nt_vertex_attrib_config[0].componentCount = 3;
-	legacy_nt_vertex_attrib_config[1].componentCount = 4;
-	legacy_nt_vertex_attrib_config[2].componentCount = 4;
-	legacy_nt_vertex_attrib_config[3].componentCount = 4;
-	legacy_nt_vertex_attrib_config[4].componentCount = 4;
-	legacy_nt_vertex_attrib_config[5].componentCount = 3;
-
-	// Single Texture Variant
-	legacy_vertex_attrib_config[0].offset = 0; // Position
-	legacy_vertex_attrib_config[1].offset = sizeof(float) * 3; // Texcoord (UNIT0)
-	legacy_vertex_attrib_config[2].offset = sizeof(float) * 5; // Color/Ambient
-	legacy_vertex_attrib_config[3].offset = sizeof(float) * 9; // Diffuse
-	legacy_vertex_attrib_config[4].offset = sizeof(float) * 13; // Specular
-	legacy_vertex_attrib_config[5].offset = sizeof(float) * 17; // Emission
-	legacy_vertex_attrib_config[6].offset = sizeof(float) * 21; // Normals
-	legacy_vertex_attrib_config[0].componentCount = 3;
-	legacy_vertex_attrib_config[1].componentCount = 2;
-	legacy_vertex_attrib_config[2].componentCount = 4;
-	legacy_vertex_attrib_config[3].componentCount = 4;
-	legacy_vertex_attrib_config[4].componentCount = 4;
-	legacy_vertex_attrib_config[5].componentCount = 4;
-	legacy_vertex_attrib_config[6].componentCount = 3;
-
-	// Multi Texture Variant
-	legacy_mt_vertex_attrib_config[0].offset = 0; // Position
-	legacy_mt_vertex_attrib_config[1].offset = sizeof(float) * 3; // Texcoord (UNIT0)
-	legacy_mt_vertex_attrib_config[2].offset = sizeof(float) * 5; // Texcoord (UNIT1)
-	legacy_mt_vertex_attrib_config[3].offset = sizeof(float) * 7; // Color/Ambient
-	legacy_mt_vertex_attrib_config[4].offset = sizeof(float) * 11; // Diffuse
-	legacy_mt_vertex_attrib_config[5].offset = sizeof(float) * 15; // Specular
-	legacy_mt_vertex_attrib_config[6].offset = sizeof(float) * 19; // Emission
-	legacy_mt_vertex_attrib_config[7].offset = sizeof(float) * 23; // Normals
-	legacy_mt_vertex_attrib_config[0].componentCount = 3;
-	legacy_mt_vertex_attrib_config[1].componentCount = 2;
-	legacy_mt_vertex_attrib_config[2].componentCount = 2;
-	legacy_mt_vertex_attrib_config[3].componentCount = 4;
-	legacy_mt_vertex_attrib_config[4].componentCount = 4;
-	legacy_mt_vertex_attrib_config[5].componentCount = 4;
-	legacy_mt_vertex_attrib_config[6].componentCount = 4;
-	legacy_mt_vertex_attrib_config[7].componentCount = 3;
-
 	// Init vertex pool for immediate mode support
 	legacy_pool_size = pool_size;
 
@@ -552,6 +568,10 @@ GLboolean vglInitWithCustomSizes(int pool_size, int width, int height, int ram_p
 }
 
 GLboolean vglInitWithCustomThreshold(int pool_size, int width, int height, int ram_threshold, int cdram_threshold, int phycont_threshold, int cdlg_threshold, SceGxmMultisampleMode msaa) {
+#ifdef HAVE_RAZOR
+	if (cache_root[0])
+		sceIoMkdir(cache_root, 0777);
+#endif
 	// Initializing sceGxm
 	init_gxm();
 
@@ -625,8 +645,12 @@ void *vglAlloc(uint32_t size, vglMemType type) {
 	return vgl_malloc(size, type);
 }
 
-void *vglForceAlloc(uint32_t size) {
-	return gpu_alloc_mapped_for_cpu(size);
+void *vglForceAlloc(uint32_t size, GLboolean for_gpu) {
+	return for_gpu ? gpu_alloc_mapped_for_gpu(size) : gpu_alloc_mapped_for_cpu(size);
+}
+
+void *vglForceAllocAligned(uint32_t alignment, uint32_t size, GLboolean for_gpu) {
+	return for_gpu ? gpu_alloc_mapped_aligned_for_gpu(alignment, size) : gpu_alloc_mapped_aligned_for_cpu(alignment, size);
 }
 
 void *vglMalloc(uint32_t size) {
@@ -641,7 +665,7 @@ void *vglMalloc(uint32_t size) {
 		return res;
 
 	// If it fails, we try with physically contiguous RAM
-	res = vgl_malloc(size, VGL_MEM_SLOW);
+	res = vgl_malloc(size, VGL_MEM_PHYCONT);
 	if (res)
 		return res;
 
@@ -652,11 +676,20 @@ void *vglMalloc(uint32_t size) {
 
 	// If it fails, as last resort, we try VRAM
 	res = vgl_malloc(size, VGL_MEM_VRAM);
-#ifndef SKIP_ERROR_HANDLING
+
 	if (!res) {
-		vgl_log("%s:%d: vglMalloc failed allocating 0x%X bytes (Call generated from 0x%08X).\n", __FILE__, __LINE__, size, __builtin_return_address(0));
-	}
+		vgl_log("%s:%d: vglMalloc failed allocating %u bytes (Call generated from 0x%08X). Attempting to recover enough memory to go past it.\n", __FILE__, __LINE__, size, __builtin_return_address(0));
+		unsafe_allocator_counter = 0;
+		res = gpu_alloc_mapped_aligned_unsafe_for_cpu(MEM_ALIGNMENT, size);
+#ifdef LOG_ERRORS
+		if (!res) {
+			vgl_log("%s:%d vglMalloc failed with a requested size of %u bytes.\n", __FILE__, __LINE__, size);
+		} else {
+			vgl_log("%s:%d vglMalloc successfully allocated the requested memory after forcing %d garbage collection cycles.\n", __FILE__, __LINE__, unsafe_allocator_counter);
+		}
 #endif
+	}
+
 	return res;
 }
 
@@ -676,7 +709,7 @@ void *vglMemalign(uint32_t alignment, uint32_t size) {
 		return res;
 
 	// If it fails, we try with physically contiguous RAM
-	res = vgl_memalign(alignment, size, VGL_MEM_SLOW);
+	res = vgl_memalign(alignment, size, VGL_MEM_PHYCONT);
 	if (res)
 		return res;
 
@@ -687,11 +720,20 @@ void *vglMemalign(uint32_t alignment, uint32_t size) {
 
 	// If it fails, as last resort, we try VRAM
 	res = vgl_memalign(alignment, size, VGL_MEM_VRAM);
-#ifndef SKIP_ERROR_HANDLING
+
 	if (!res) {
 		vgl_log("%s:%d: vglMemalign failed allocating 0x%X bytes with 0x%X alignment.\n", __FILE__, __LINE__, size, alignment);
-	}
+		unsafe_allocator_counter = 0;
+		res = gpu_alloc_mapped_aligned_unsafe_for_cpu(alignment, size);
+#ifdef LOG_ERRORS
+		if (!res) {
+			vgl_log("%s:%d vglMemalign failed with a requested size of %u bytes.\n", __FILE__, __LINE__, size);
+		} else {
+			vgl_log("%s:%d vglMemalign successfully allocated the requested memory after forcing %d garbage collection cycles.\n", __FILE__, __LINE__, unsafe_allocator_counter);
+		}
 #endif
+	}
+
 	return res;
 }
 
@@ -707,7 +749,7 @@ void *vglCalloc(uint32_t nmember, uint32_t size) {
 		return res;
 
 	// If it fails, we try with physically contiguous RAM
-	res = vgl_calloc(nmember, size, VGL_MEM_SLOW);
+	res = vgl_calloc(nmember, size, VGL_MEM_PHYCONT);
 	if (res)
 		return res;
 
@@ -718,11 +760,19 @@ void *vglCalloc(uint32_t nmember, uint32_t size) {
 
 	// If it fails, as last resort, we try VRAM
 	res = vgl_calloc(nmember, size, VGL_MEM_VRAM);
-#ifndef SKIP_ERROR_HANDLING
+
 	if (!res) {
 		vgl_log("%s:%d: vglCalloc failed allocating 0x%X blocks of 0x%X bytes.\n", __FILE__, __LINE__, nmember, size);
+		unsafe_allocator_counter = 0;
+		res = gpu_alloc_mapped_aligned_unsafe_for_cpu(MEM_ALIGNMENT, size * nmember);
+		if (!res) {
+			vgl_log("%s:%d vglCalloc failed with a requested size of %u bytes.\n", __FILE__, __LINE__, size);
+		} else {
+			sceClibMemset(res, 0, size * nmember);
+			vgl_log("%s:%d vglCalloc successfully allocated the requested memory after forcing %d garbage collection cycles.\n", __FILE__, __LINE__, unsafe_allocator_counter);
+		}
 	}
-#endif
+
 	return res;
 }
 
@@ -770,6 +820,8 @@ void vglUseExtraMem(GLboolean use) {
 void vglSetCircularPoolSize(uint32_t size) {
 #ifndef DISABLE_CIRCULAR_POOL
 	circular_data_pool_size = size;
+#else
+	vgl_log("%s:%d %s: This function is not compatible with NO_CIRCULAR_POOL=1 flag.\n", __FILE__, __LINE__, __func__);
 #endif
 }
 
@@ -780,6 +832,8 @@ void vglUseCachedMem(GLboolean use) {
 void vglSetTextureCacheFrequency(GLuint freq) {
 #ifdef HAVE_TEX_CACHE
 	vgl_tex_cache_freq = freq;
+#else
+	vgl_log("%s:%d %s: This function requires HAVE_TEXTURE_CACHE=1 flag.\n", __FILE__, __LINE__, __func__);
 #endif
 }
 
@@ -787,6 +841,8 @@ void vglSetupScratchMemory(GLboolean scratch_for_dynamic, GLboolean scratch_for_
 #if defined(HAVE_SCRATCH_MEMORY) && !defined(DISABLE_CIRCULAR_POOL)
 	vgl_dynamic_wants_scratch = scratch_for_dynamic;
 	vgl_stream_wants_scratch = scratch_for_stream;
+#else
+	vgl_log("%s:%d %s: This function is not compatible with the current vitaGL compile flags.\n", __FILE__, __LINE__, __func__);
 #endif
 }
 
@@ -801,11 +857,29 @@ uint32_t vglGetFrameNumber() {
 void vglPhycontMemLazyInit(size_t size) {
 #ifndef PHYCONT_ON_DEMAND
 	vgl_mem_provide_phycont(size);
+#else
+	vgl_log("%s:%d %s: This function is not compatible with PHYCONT_ON_DEMAND=1 flag.\n", __FILE__, __LINE__, __func__);
 #endif
+}
+
+GLboolean vglSetCacheRootPath(const char *path) {
+	if (vgl_inited || !path || !path[0] || strlen(path) >= sizeof(cache_root))
+		return GL_FALSE;
+	strcpy(cache_root, path);
+#ifdef HAVE_RAZOR
+	sprintf(vgl_gpu_crash_path, "%s/gpucrash.sgx", cache_root);
+#endif
+	return GL_TRUE;
 }
 
 void vglSetShaderCachePath(const char *path) {
 #ifdef HAVE_SHADER_CACHE
 	strcpy(shader_cache_root, path);
+#else
+	vgl_log("%s:%d %s: This function requires HAVE_SHADER_CACHE=1 flag.\n", __FILE__, __LINE__, __func__);
 #endif
+}
+
+void vglSetShaderAssociationPath(const char *path) {
+	shark_set_shader_association_path(path);
 }

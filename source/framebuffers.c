@@ -31,6 +31,42 @@ framebuffer *active_read_fb = NULL; // Current readback framebuffer in use
 framebuffer *active_write_fb = NULL; // Current write framebuffer in use
 renderbuffer *active_rb = NULL; // Current renderbuffer in use
 
+#ifdef HAVE_ACCURATE_MSAA
+static inline SceGxmMultisampleMode gl_samples_to_gxm(GLsizei samples) {
+	return samples > 2 ? SCE_GXM_MULTISAMPLE_4X : samples > 0 ? SCE_GXM_MULTISAMPLE_2X : SCE_GXM_MULTISAMPLE_NONE;
+}
+
+static void update_framebuffer_msaa(framebuffer *fb, SceGxmMultisampleMode mode) {
+	if (fb->msaa_mode == mode) {
+		return;
+	}
+
+	// Finish the current scene before changing its render-target descriptors.
+	if (fb == in_use_framebuffer) {
+		glFlush();
+	}
+	
+	if (fb->target) {
+		mark_rt_as_dirty(fb->target);
+		fb->target = NULL;
+	}
+	if (fb->depthbuffer_ptr) {
+#ifndef DEPTH_STENCIL_HACK
+		mark_depth_stencil_as_dirty(fb->depthbuffer_ptr);
+#endif
+		fb->depthbuffer_ptr = NULL;
+	}
+	fb->depthbuffer_state &= ~DEPTHBUFFER_READY;
+	fb->msaa_mode = mode;
+	if (fb->tex) {
+		sceGxmColorSurfaceSetScaleMode(&fb->colorbuffer, mode == SCE_GXM_MULTISAMPLE_NONE ? SCE_GXM_COLOR_SURFACE_SCALE_NONE : SCE_GXM_COLOR_SURFACE_SCALE_MSAA_DOWNSCALE);
+	}
+	if (fb == active_write_fb || fb == in_use_framebuffer) {
+		dirty_framebuffer = GL_TRUE;
+	}
+}
+#endif
+
 uint32_t get_alpha_channel_size(SceGxmColorFormat type) {
 	switch (type) {
 	case SCE_GXM_COLOR_FORMAT_U8_R:
@@ -205,12 +241,17 @@ inline __attribute__((always_inline)) void glGenFramebuffers(GLsizei n, GLuint *
 #ifndef SKIP_ERROR_HANDLING
 	if (n < 0) {
 		SET_GL_ERROR(GL_INVALID_VALUE)
+	} else if (n == 0) {
+		return;
 	}
 #endif
 	for (i = 0; i < BUFFERS_NUM; i++) {
 		if (!framebuffers[i].active) {
 			ids[j++] = (GLuint)&framebuffers[i];
 			framebuffers[i].active = GL_TRUE;
+#ifdef HAVE_ACCURATE_MSAA
+			framebuffers[i].msaa_mode = SCE_GXM_MULTISAMPLE_NONE;
+#endif
 			framebuffers[i].depthbuffer_state = DEPTHBUFFER_MISSING;
 			framebuffers[i].depthbuffer_ptr = NULL;
 			framebuffers[i].target = NULL;
@@ -232,6 +273,8 @@ void glGenRenderbuffers(GLsizei n, GLuint *ids) {
 #ifndef SKIP_ERROR_HANDLING
 	if (n < 0) {
 		SET_GL_ERROR(GL_INVALID_VALUE)
+	} else if (n == 0) {
+		return;
 	}
 #endif
 	for (i = 0; i < BUFFERS_NUM; i++) {
@@ -277,7 +320,7 @@ void glDeleteFramebuffers(GLsizei n, const GLuint *ids) {
 			}
 #ifndef DEPTH_STENCIL_HACK
 			if (fb->depthbuffer_ptr) {
-				mark_as_dirty(fb->depthbuffer_ptr->depthData);
+				mark_depth_stencil_as_dirty(fb->depthbuffer_ptr);
 			}
 #endif
 		}
@@ -361,7 +404,7 @@ void glFramebufferRenderbuffer(GLenum target, GLenum attachment, GLenum renderbu
 	// Discarding any previously bound hidden depth buffers
 	if (fb->depthbuffer_ptr) {
 #ifndef DEPTH_STENCIL_HACK
-		mark_as_dirty(fb->depthbuffer_ptr->depthData);
+		mark_depth_stencil_as_dirty(fb->depthbuffer_ptr);
 #endif
 	}
 	fb->depthbuffer_ptr = NULL;
@@ -393,7 +436,7 @@ void glNamedFramebufferRenderbuffer(GLuint target, GLenum attachment, GLenum ren
 	// Discarding any previously bound hidden depth buffers
 	if (fb->depthbuffer_ptr) {
 #ifndef DEPTH_STENCIL_HACK
-		mark_as_dirty(fb->depthbuffer_ptr->depthData);
+		mark_depth_stencil_as_dirty(fb->depthbuffer_ptr);
 #endif
 		fb->depthbuffer_ptr = NULL;
 	}
@@ -480,10 +523,58 @@ inline void glFramebufferTexture2D(GLenum target, GLenum attachment, GLenum text
 		SET_GL_ERROR(GL_INVALID_OPERATION)
 	} else if (textarget != GL_TEXTURE_2D) {
 		SET_GL_ERROR_WITH_VALUE(GL_INVALID_ENUM, textarget)
+	} else if (tex_id >= TEXTURES_NUM) {
+		SET_GL_ERROR_WITH_VALUE(GL_INVALID_VALUE, tex_id)
+	} else if (attachment != GL_COLOR_ATTACHMENT0) {
+		SET_GL_ERROR_WITH_VALUE(GL_INVALID_ENUM, attachment)		
 	}
 #endif
-	
+
+#ifdef HAVE_ACCURATE_MSAA
+	update_framebuffer_msaa(fb, SCE_GXM_MULTISAMPLE_NONE);
+#endif
 	_glFramebufferTexture2D(fb, attachment, &texture_slots[tex_id], tex_id);
+}
+
+void glFramebufferTexture2DMultisample(GLenum target, GLenum attachment, GLenum textarget, GLuint tex_id, GLint level, GLsizei samples) {
+#ifdef HAVE_ACCURATE_MSAA
+	THREAD_SAFE()
+	
+	framebuffer *fb;
+	switch (target) {
+	case GL_FRAMEBUFFER:
+	case GL_DRAW_FRAMEBUFFER:
+		fb = active_write_fb;
+		break;
+	case GL_READ_FRAMEBUFFER:
+		fb = active_read_fb;
+		break;
+	default:
+		SET_GL_ERROR_WITH_VALUE(GL_INVALID_ENUM, target)
+	}
+
+#ifndef SKIP_ERROR_HANDLING
+	if (!fb) {
+		SET_GL_ERROR(GL_INVALID_OPERATION)
+	}
+	if (attachment != GL_COLOR_ATTACHMENT0) {
+		SET_GL_ERROR_WITH_VALUE(GL_INVALID_ENUM, attachment)		
+	} else if (textarget != GL_TEXTURE_2D) {
+		SET_GL_ERROR_WITH_VALUE(GL_INVALID_ENUM, textarget)
+	} else if (level != 0) {
+		SET_GL_ERROR_WITH_VALUE(GL_INVALID_VALUE, level)
+	} else if (tex_id >= TEXTURES_NUM) {
+		SET_GL_ERROR_WITH_VALUE(GL_INVALID_VALUE, tex_id)		
+	} else if (samples < 0 || samples > 4) {
+		SET_GL_ERROR_WITH_VALUE(GL_INVALID_VALUE, samples)
+	}
+#endif
+
+	update_framebuffer_msaa(fb, gl_samples_to_gxm(samples));
+	_glFramebufferTexture2D(fb, attachment, &texture_slots[tex_id], tex_id);
+#else
+	vgl_log("%s:%d %s: This function requires HAVE_ACCURATE_MSAA=1 flag.\n", __FILE__, __LINE__, __func__);
+#endif
 }
 
 inline void glNamedFramebufferTexture2D(GLuint target, GLenum attachment, GLenum textarget, GLuint tex_id, GLint level) {
@@ -496,9 +587,16 @@ inline void glNamedFramebufferTexture2D(GLuint target, GLenum attachment, GLenum
 		SET_GL_ERROR(GL_INVALID_OPERATION)
 	} else if (textarget != GL_TEXTURE_2D) {
 		SET_GL_ERROR_WITH_VALUE(GL_INVALID_ENUM, textarget)
+	} else if (tex_id >= TEXTURES_NUM) {
+		SET_GL_ERROR_WITH_VALUE(GL_INVALID_VALUE, tex_id)
+	} else if (attachment != GL_COLOR_ATTACHMENT0) {
+		SET_GL_ERROR_WITH_VALUE(GL_INVALID_ENUM, attachment)		
 	}
 #endif
-	
+
+#ifdef HAVE_ACCURATE_MSAA
+	update_framebuffer_msaa(fb, SCE_GXM_MULTISAMPLE_NONE);
+#endif
 	_glFramebufferTexture2D(fb, attachment, &texture_slots[tex_id], tex_id);
 }
 
@@ -605,7 +703,11 @@ void glReadPixels(GLint x, GLint y, GLsizei width, GLsizei height, GLenum format
 			break;
 		case SCE_GXM_TEXTURE_FORMAT_U4U4U4U4_RGBA:
 			if (format == GL_BGRA && type == GL_UNSIGNED_SHORT_4_4_4_4)
-				
+				fast_store = GL_TRUE;
+			else
+				read_cb = read_bgra4444;
+			src_bpp = 2;
+			break;
 		case SCE_GXM_TEXTURE_FORMAT_U8_R:
 			if ((format == GL_R8 || format == GL_RED) && type == GL_UNSIGNED_BYTE)
 				fast_store = GL_TRUE;
@@ -747,6 +849,9 @@ void glReadPixels(GLint x, GLint y, GLsizei width, GLsizei height, GLenum format
 	}
 
 #ifdef HAVE_UNFLIPPED_FBOS
+	if (fast_store) {
+		dst_bpp = src_bpp;
+	}
 	uint8_t *data_u8 = (uint8_t *)data + (width * dst_bpp * (height - 1));
 #else
 	uint8_t *data_u8 = active_read_fb ? (uint8_t *)data : ((uint8_t *)data + (width * dst_bpp * (height - 1)));
@@ -826,10 +931,11 @@ void glBlitNamedFramebuffer(GLuint readFramebuffer, GLuint drawFramebuffer, GLin
 
 	// Set framebuffer blit shader
 	sceGxmSetVertexProgram(gxm_context, blit_vertex_program_patched);
-	if (is_fbo_float)
+	if (is_fbo_float) {
 		sceGxmSetFragmentProgram(gxm_context, blit_fragment_program_float_patched);
-	else
+	} else {
 		sceGxmSetFragmentProgram(gxm_context, blit_fragment_program_patched);
+	}
 	
 	// Set fragment texture to read framebuffer bound color attachment
 	framebuffer *read_fb = (framebuffer *)readFramebuffer;
@@ -860,37 +966,35 @@ void glBlitNamedFramebuffer(GLuint readFramebuffer, GLuint drawFramebuffer, GLin
 		0xFF, 0xFF);
 	
 	// Filling position and texcoord values
-	float *vertex_data = (float *)gpu_alloc_mapped_temp(16 * sizeof(float));
-	// Position
-	vector4f tmp;
-	vector4f_convert_to_local_space(&tmp, dstX0, dstY0, dstX1 - dstX0, dstY1 - dstY0);
-	vertex_data[0] = vertex_data[2] = tmp.x; // X0
-	vertex_data[1] = vertex_data[7] = tmp.z; // Y0
-	vertex_data[4] = vertex_data[6] = tmp.y; // X1
-	vertex_data[3] = vertex_data[5] = tmp.w; // Y1
-	// Texcoords
+	vector4f position;
+	vector4f texcoord;
+	vector4f_convert_to_local_space(&position, dstX0, dstY0, dstX1 - dstX0, dstY1 - dstY0);
+	texcoord.x = (float)srcX0;
+	texcoord.y = (float)srcX1;
 	if (readFramebuffer) {
+		texcoord.x /= (float)read_fb->width;
+		texcoord.y /= (float)read_fb->width;
 #ifndef HAVE_UNFLIPPED_FBOS
-		vertex_data[8] = vertex_data[10] = (float)srcX0 / (float)read_fb->width; // X0
-		vertex_data[9] = vertex_data[15] = ((float)read_fb->height - (float)srcY0) / (float)read_fb->height; // Y0
-		vertex_data[12] = vertex_data[14] = (float)srcX1 / (float)read_fb->width; // X1
-		vertex_data[11] = vertex_data[13] = ((float)read_fb->height - (float)srcY1) / (float)read_fb->height; // Y1
+		texcoord.z = ((float)read_fb->height - (float)srcY0) / (float)read_fb->height;
+		texcoord.w = ((float)read_fb->height - (float)srcY1) / (float)read_fb->height;
 #else
-		vertex_data[8] = vertex_data[10] = (float)srcX0 / (float)read_fb->width; // X0
-		vertex_data[9] = vertex_data[15] = ((float)read_fb->height - (float)srcY1) / (float)read_fb->height; // Y0
-		vertex_data[12] = vertex_data[14] = (float)srcX1 / (float)read_fb->width; // X1
-		vertex_data[11] = vertex_data[13] = ((float)read_fb->height - (float)srcY0) / (float)read_fb->height; // Y1
+		texcoord.z = ((float)read_fb->height - (float)srcY1) / (float)read_fb->height;
+		texcoord.w = ((float)read_fb->height - (float)srcY0) / (float)read_fb->height;
 #endif
 	} else {
-		vertex_data[8] = vertex_data[10] = (float)srcX0 / DISPLAY_WIDTH_FLOAT; // X0
-		vertex_data[9] = vertex_data[15] = (DISPLAY_HEIGHT_FLOAT - (float)srcY1) / DISPLAY_HEIGHT_FLOAT; // Y0
-		vertex_data[12] = vertex_data[14] = (float)srcX1 / DISPLAY_WIDTH_FLOAT; // X1
-		vertex_data[11] = vertex_data[13] = (DISPLAY_HEIGHT_FLOAT - (float)srcY0) / DISPLAY_HEIGHT_FLOAT; // Y1
+		texcoord.x /= DISPLAY_WIDTH_FLOAT;
+		texcoord.y /= DISPLAY_WIDTH_FLOAT;
+		texcoord.z = (DISPLAY_HEIGHT_FLOAT - (float)srcY1) / DISPLAY_HEIGHT_FLOAT;
+		texcoord.w = (DISPLAY_HEIGHT_FLOAT - (float)srcY0) / DISPLAY_HEIGHT_FLOAT;
 	}
-	sceGxmSetVertexStream(gxm_context, 0, vertex_data);
+
+	void *vertex_buffer;
+	sceGxmReserveVertexDefaultUniformBuffer(gxm_context, &vertex_buffer);
+	vglSetUniformData((uint8_t *)vertex_buffer + blit_position_offset, SCE_GXM_PARAMETER_TYPE_F32, 0, 1, 4, &position.x, SCE_GXM_PARAMETER_TYPE_F32);
+	vglSetUniformData((uint8_t *)vertex_buffer + blit_texcoord_offset, SCE_GXM_PARAMETER_TYPE_F32, 0, 1, 4, &texcoord.x, SCE_GXM_PARAMETER_TYPE_F32);
 
 	// Draw read framebuffer on top of write framebuffer
-	sceGxmDraw(gxm_context, SCE_GXM_PRIMITIVE_TRIANGLE_FAN, SCE_GXM_INDEX_FORMAT_U16, depth_clear_indices, 4);
+	sceGxmDrawPrecomputed(gxm_context, &blit_draw_state);
 
 	// Restore all invalidated configurations
 	if (readFramebuffer) {

@@ -90,7 +90,6 @@ extern "C" {
 #define GL_POLYGON                                      0x0009
 #define GL_ADD                                          0x0104
 #define GL_NEVER                                        0x0200
-#define GL_NEVER                                        0x0200
 #define GL_LESS                                         0x0201
 #define GL_EQUAL                                        0x0202
 #define GL_LEQUAL                                       0x0203
@@ -414,6 +413,8 @@ extern "C" {
 #define GL_PROGRAM_ERROR_POSITION_ARB                   0x864B
 #define GL_NUM_COMPRESSED_TEXTURE_FORMATS               0x86A2
 #define GL_COMPRESSED_TEXTURE_FORMATS                   0x86A3
+#define GL_DOT3_RGB                                     0x86AE
+#define GL_DOT3_RGBA                                    0x86AF
 #define GL_PROGRAM_BINARY_LENGTH                        0x8741
 #define GL_MIRROR_CLAMP_EXT                             0x8742
 #define GL_BUFFER_SIZE                                  0x8764
@@ -790,6 +791,7 @@ void glFogxv(GLenum pname, const GLfixed *params);
 void glFramebufferRenderbuffer(GLenum target, GLenum attachment, GLenum renderbuffertarget, GLuint renderbuffer);
 void glFramebufferTexture(GLenum target, GLenum attachment, GLuint texture, GLint level);
 void glFramebufferTexture2D(GLenum target, GLenum attachment, GLenum textarget, GLuint texture, GLint level);
+void glFramebufferTexture2DMultisample(GLenum target, GLenum attachment, GLenum textarget, GLuint texture, GLint level, GLsizei samples);
 void glFrontFace(GLenum mode);
 void glFrustum(GLdouble left, GLdouble right, GLdouble bottom, GLdouble top, GLdouble nearVal, GLdouble farVal);
 void glFrustumf(GLfloat left, GLfloat right, GLfloat bottom, GLfloat top, GLfloat nearVal, GLfloat farVal);
@@ -1117,18 +1119,80 @@ void vglGetShaderBinary(GLuint index, GLsizei bufSize, GLsizei *length, void *bi
 typedef enum {
 	VGL_MEM_VRAM, // CDRAM
 	VGL_MEM_RAM, // USER_RW RAM
-	VGL_MEM_SLOW, // PHYCONT_USER_RW RAM
+	VGL_MEM_PHYCONT, // PHYCONT_USER_RW RAM
 	VGL_MEM_BUDGET, // CDLG RAM
 	VGL_MEM_EXTERNAL, // newlib mem
 	VGL_MEM_ALL
 } vglMemType;
 
+#define VGL_MSPACE_STATS_PROBE_ABI_VERSION 1
+#define VGL_MSPACE_STATS_PROBE_POOL_COUNT 4
+
+typedef struct {
+	uint64_t queries;
+	uint64_t eligible_hits;
+	uint64_t mismatches;
+	uint64_t mutation_attempts;
+	uint64_t invalid_queries;
+} vglMspaceStatsProbePool;
+
+typedef struct {
+	uint32_t abi_version;
+	uint32_t struct_size;
+	uint32_t supported;
+	uint32_t enabled;
+	uint32_t initialized;
+	uint32_t reserved;
+	vglMspaceStatsProbePool pools[VGL_MSPACE_STATS_PROBE_POOL_COUNT];
+} vglMspaceStatsProbe;
+
+// Startup-only, before vglInit*. Default OFF; observes real stats without reusing them.
+GLboolean vglSetMspaceStatsProbe(GLboolean enable);
+// Copies each pool under its lock. Exact ABI/size required; failure leaves output unchanged.
+GLboolean vglGetMspaceStatsProbe(vglMspaceStatsProbe *out, uint32_t size, uint32_t abi_version);
+
+#define VGL_MSPACE_STATS_CACHE_ABI_VERSION 1
+#define VGL_MSPACE_STATS_CACHE_POOL_COUNT 4
+#define VGL_MSPACE_STATS_CACHE_OFF 0
+#define VGL_MSPACE_STATS_CACHE_REUSE 1
+#define VGL_MSPACE_STATS_CACHE_VERIFY 2
+
+typedef struct {
+	uint64_t queries;
+	uint64_t eligible_hits;
+	uint64_t reused;
+	uint64_t native_calls;
+	uint64_t verification_checks;
+	uint64_t mismatches;
+	uint64_t mutation_attempts;
+	uint64_t invalid_queries;
+} vglMspaceStatsCachePool;
+
+typedef struct {
+	uint32_t abi_version;
+	uint32_t struct_size;
+	uint32_t supported;
+	uint32_t mode;
+	uint32_t initialized;
+	uint32_t validation_failed;
+	uint32_t reserved[2];
+	vglMspaceStatsCachePool pools[VGL_MSPACE_STATS_CACHE_POOL_COUNT];
+} vglMspaceStatsCache;
+
+// Startup-only; OFF by default. Non-OFF modes and the dry-run probe are mutually exclusive.
+GLboolean vglSetMspaceStatsCache(uint32_t mode);
+// Per-pool snapshots; exact ABI/size required, failure leaves output unchanged.
+GLboolean vglGetMspaceStatsCache(vglMspaceStatsCache *out, uint32_t size, uint32_t abi_version);
+
 typedef enum {
 	VGL_TYPE_NONE, // No semantic
 	VGL_TYPE_TEXCOORD, // TEXCOORD#
+	VGL_TYPE_TEXCOORD_CENTROID, // TEXCOORD#_CENTROID
 	VGL_TYPE_COLOR, // COLOR#
+	VGL_TYPE_COLOR_CENTROID, // COLOR#_CENTROID
 	VGL_TYPE_FOG, // FOG
-	VGL_TYPE_CLIP // CLP#
+	VGL_TYPE_FOG_CENTROID, // FOG_CENTROID
+	VGL_TYPE_CLIP, // CLP#
 } vglSemanticType;
 
 typedef enum {
@@ -1136,6 +1200,16 @@ typedef enum {
 	VGL_MODE_GLOBAL, // Uses a global semantics pool for translating shaders. Less accuracy than VGL_MODE_SHADER_PAIR but has no premise that must be respected.
 	VGL_MODE_POSTPONED // Moves shaders compilation into glLinkProgram. Best results since will always have correct shader couples for the translation for accurate semantic bindings resolution.
 } vglSemanticMode;
+
+typedef struct {
+	SceGxmContext *context; // Usable gxm context during a custom splashscreen rendering
+	SceGxmShaderPatcher *patcher; // Usable gxm shader patcher during a custom splashscreen rendering
+	float elapsed_seconds; // Elapsed time since splashscreen start in seconds
+	float delta_seconds; // Elapsed time since previous splahscreen frame in seconds
+	GLboolean must_stop; // Flag whether splashscreen is supposed to end
+} vglSplashDetails;
+
+typedef GLboolean (*vglSplashCallback)(const vglSplashDetails *details);
 
 // vgl*
 // Add a new global custom semantic binding for the GLSL translator.
@@ -1147,6 +1221,9 @@ void vglAddSemanticBindingHint(const GLchar *const *varying, GLenum type);
 // Alloc memory from vitaGL internal memory pools. Needs to be freed with vglFree.
 void *vglAlloc(uint32_t size, vglMemType type);
 
+// Prefer the RAM pool for subsequent static buffer allocations. Disabled by default.
+void vglSetStaticVboRam(GLboolean enable);
+
 // Alloc temporary memory from vitaGL internal scratch pool. Allocation is extremely fast if NO_CIRCULAR_POOL is not used. Memory lifetime is guaranteed for 3 frames.
 void *vglAllocFromScratch(size_t size);
 
@@ -1157,7 +1234,10 @@ void vglBufferData(GLenum target, const GLvoid *data);
 void *vglCalloc(uint32_t nmember, uint32_t size);
 
 // Alloc memory from vitaGL internal memory pools. If the memory pools exhausted, vitaGL will attempt to free enough memory to not fail this allocation. Needs to be freed with vglFree.
-void *vglForceAlloc(uint32_t size);
+void *vglForceAlloc(uint32_t size, GLboolean for_gpu);
+
+// Alloc aligned memory from vitaGL internal memory pools. If the memory pools exhausted, vitaGL will attempt to free enough memory to not fail this allocation. Needs to be freed with vglFree.
+void *vglForceAllocAligned(uint32_t alignment, uint32_t size, GLboolean for_gpu);
 
 // Frees a previously allocated memory block in the vitaGL internal memory pools.
 void vglFree(void *addr);
@@ -1179,6 +1259,9 @@ void *vglGetProcAddress(const char *name);
 
 // Get the internal texture data pointer of a GL texture.
 void *vglGetTexDataPointer(GLenum target);
+
+// Get the internal texture palette data pointer of a GL texture.
+void *vglGetTexPaletteDataPointer(GLenum target);
 
 // Simple vitaGL init function. Legacy pool size is the amount of memory to reserve to handle immediate mode usage.
 GLboolean vglInit(int legacy_pool_size);
@@ -1210,13 +1293,19 @@ size_t vglMemFree(vglMemType type);
 // Gets the total amount of free and used memory in a given internal memory pool.
 size_t vglMemTotal(vglMemType type);
 
+// Setups a GL texture with custom internal values.
+void vglSetupTexture(GLenum target, void *data, SceGxmTextureFormat format, SceGxmTextureType type, GLsizei width, GLsizei height, GLsizei mip_count);
+
 // Replaces original texture data pointer with a new one in a GL texture.
 void vglOverloadTexDataPointer(GLenum target, void *data);
+
+// Replaces original texture palette data pointer with a new one in a GL texture.
+void vglOverloadTexPaletteDataPointer(GLenum target, void *data);
 
 // Allows to override texture format of a GL texture. Requires HAVE_UNPURE_TEXFORMATS.
 void vglOverrideTexFormat(GLenum target);
 
-// Allows to init phycont memory heap (VGL_MEM_SLOW) after vglInit* calls. Useful for when SceAvPlayer is used only for an intro video.
+// Allows to init phycont memory heap (VGL_MEM_PHYCONT) after vglInit* calls. Useful for when SceAvPlayer is used only for an intro video.
 void vglPhycontMemLazyInit(size_t size);
 
 // Variant of glReadPixels that uses GPU underneat to perform the readback. The passed data pointer must be GPU mapped (eg: heap memory).
@@ -1227,6 +1316,9 @@ void *vglRealloc(void *ptr, uint32_t size);
 
 // Change the total memory to use for internal circular pools to use in vitaGL. Disabled with NO_CIRCULAR_POOL. Default value: 32 * 1024 * 1024.
 void vglSetCircularPoolSize(uint32_t size);
+
+// Set color for the commit hash text during a custom splashscreen rendering
+void vglSetCustomSplashscreenHashColor(float r, float g, float b, float a);
 
 // Sets the number of buffers to use for the display swapchain. Default value: 3.
 void vglSetDisplayBufferCount(int count);
@@ -1243,8 +1335,71 @@ void vglSetParamBufferSize(uint32_t size);
 // Change the currently used semantics binding resolution mode for the GLSL translator. Default value: VGL_MODE_POSTPONED.
 void vglSetSemanticBindingMode(GLenum mode);
 
+// Sets path where to save shader association data for Razor. If an empty string is supplied, shader association data is disabled. Default value: "".
+void vglSetShaderAssociationPath(const char *path);
+
+#define VGL_SHADER_DIAGNOSTICS_ABI_VERSION 2
+
+typedef enum {
+	VGL_SHADER_DIAG_CUSTOM_VERTEX_CACHE,
+	VGL_SHADER_DIAG_CUSTOM_FRAGMENT_CACHE,
+	VGL_SHADER_DIAG_CUSTOM_VERTEX_COMPILE,
+	VGL_SHADER_DIAG_CUSTOM_FRAGMENT_COMPILE,
+	VGL_SHADER_DIAG_CUSTOM_VERTEX_REGISTER,
+	VGL_SHADER_DIAG_CUSTOM_FRAGMENT_REGISTER,
+	VGL_SHADER_DIAG_CUSTOM_LINK,
+	VGL_SHADER_DIAG_FFP_VERTEX_CACHE,
+	VGL_SHADER_DIAG_FFP_FRAGMENT_CACHE,
+	VGL_SHADER_DIAG_FFP_VERTEX_COMPILE,
+	VGL_SHADER_DIAG_FFP_FRAGMENT_COMPILE,
+	VGL_SHADER_DIAG_FFP_VERTEX_REGISTER,
+	VGL_SHADER_DIAG_FFP_FRAGMENT_REGISTER,
+	VGL_SHADER_DIAG_VERTEX_PATCH,
+	VGL_SHADER_DIAG_FRAGMENT_PATCH,
+	VGL_SHADER_DIAG_STAGE_COUNT
+} vglShaderDiagnosticStage;
+
+#define VGL_SHADER_DIAGNOSTICS_TIMED_STAGES 0x47cfu
+
+// Cache results mean open hit/miss, compile results mean non-null/null, link positive means function end.
+// Register/patch results mean GXM return zero/nonzero; timed_stages identifies measured buckets.
+// Cache time covers lookup and load on hits; link time includes its child stages. Do not sum them.
+typedef struct {
+	uint64_t requests;
+	uint64_t positive_results;
+	uint64_t negative_results;
+	uint64_t total_us;
+	uint64_t max_us;
+	uint32_t first_frame;
+	uint32_t last_frame;
+} vglShaderDiagnosticStageStats;
+
+typedef struct {
+	uint32_t abi_version;
+	uint32_t size;
+	uint32_t enabled;
+	uint32_t snapshot_frame;
+	uint32_t available_stages; // Bitmask indexed by vglShaderDiagnosticStage.
+	uint32_t timed_stages; // Timed stages intersected with available_stages.
+	uint64_t snapshot_us;
+	uint64_t compile_requests;
+	uint64_t postponed_requests;
+	uint64_t link_missing_shaders;
+	uint64_t link_relinked;
+	vglShaderDiagnosticStageStats stages[VGL_SHADER_DIAG_STAGE_COUNT];
+} vglShaderDiagnostics;
+
+// Call only on the GL owner thread between GL calls. Enable defaults to false; reset preserves enable.
+void vglSetShaderDiagnostics(GLboolean enable);
+void vglResetShaderDiagnostics(void);
+// Exact size/version required; mismatch leaves output and GL error unchanged. Disabled snapshots have no timestamp.
+GLboolean vglGetShaderDiagnostics(vglShaderDiagnostics *out, uint32_t size, uint32_t abi_version);
+
 // Overloads the shader cache path when HAVE_SHADER_CACHE=1 is used. Must be called before vglInit*. Default value: ux0:data/shader_cache.
 void vglSetShaderCachePath(const char *path);
+
+// Overloads the default vitaGL boot splashscreen with a custom one. Not compatible with NO_SPLASHSCREEN=1.
+void vglSetupCustomSplashscreen(vglSplashCallback init_callback, vglSplashCallback term_callback, vglSplashCallback main_callback, GLboolean clear_screen);
 
 // Change the lifetime for a texture to be considered cacheable. Requires HAVE_TEXTURE_CACHE.
 void vglSetTextureCacheFrequency(GLuint freq);
@@ -1261,11 +1416,11 @@ void vglSetVertexAttribPoolSize(uint32_t main_size, uint32_t aux_size);
 // Setup the vertex ring buffer size of sceGxm. Must be called before vglInit*. Default value: SCE_GXM_DEFAULT_VERTEX_RING_BUFFER_SIZE.
 void vglSetVertexBufferSize(uint32_t size);
 
-// Change the scenes per frame value to use for the display rendertarget. Default value: 1
-void vglSetupDisplayRenderTarget(uint8_t size);
-
 // Change the priority and affinity to use for the garbage collector thread. Must be called before vglInit*.
 void vglSetupGarbageCollector(int priority, int affinity);
+
+// Change the scenes per frame value to use for the display and fbos rendertargets. Default value: 1, 1.
+void vglSetupRenderTargetScenesNum(uint8_t display_size, uint8_t fbo_size);
 
 // Change what kind of vertex buffer objects are considered eligible for scratch memory usage in order to reduce allocation costs. Requires USE_SCRATCH_MEMORY.
 void vglSetupScratchMemory(GLboolean scratch_for_dynamic, GLboolean scratch_for_stream);

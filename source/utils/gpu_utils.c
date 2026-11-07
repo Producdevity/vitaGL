@@ -40,8 +40,9 @@ uint32_t vgl_tex_cache_freq = 3600; // Number of frames prior a texture becomes 
 
 #define vgl_alloc_attempt(alignment, size, type) \
 	res = vgl_memalign(alignment, size, type); \
-	if (res) \
-		return res;
+	if (res) { \
+		return res; \
+	}
 
 // VRAM usage setting
 uint8_t use_vram_for_usse = GL_FALSE;
@@ -91,7 +92,7 @@ void dxt_compress(uint8_t *dst, uint8_t *src, int w, int h, int isdxt5) {
 static inline __attribute__((always_inline)) void *gpu_alloc_mapped_aligned_for_cpu_inner(size_t alignment, size_t size) {
 	void *res;
 	vgl_alloc_attempt(alignment, size, VGL_MEM_RAM)
-	vgl_alloc_attempt(alignment, size, VGL_MEM_SLOW)
+	vgl_alloc_attempt(alignment, size, VGL_MEM_PHYCONT)
 	vgl_alloc_attempt(alignment, size, VGL_MEM_BUDGET)
 	vgl_alloc_attempt(alignment, size, VGL_MEM_VRAM)
 	if (use_extra_mem) {
@@ -104,7 +105,7 @@ static inline __attribute__((always_inline)) void *gpu_alloc_mapped_aligned_for_
 	void *res;
 	vgl_alloc_attempt(alignment, size, VGL_MEM_VRAM)
 	vgl_alloc_attempt(alignment, size, VGL_MEM_RAM)
-	vgl_alloc_attempt(alignment, size, VGL_MEM_SLOW)
+	vgl_alloc_attempt(alignment, size, VGL_MEM_PHYCONT)
 	vgl_alloc_attempt(alignment, size, VGL_MEM_BUDGET)
 	if (use_extra_mem) {
 		res = vgl_memalign(alignment, size, VGL_MEM_EXTERNAL);
@@ -120,8 +121,9 @@ static inline __attribute__((always_inline)) uint32_t vgl_cache_old_textures(siz
 	while (vgl_uncached_tex_head && cached_bytes < size) {
 		texture *tex = vgl_uncached_tex_head; // Just some readability sugar
 		if ((tex->last_frame == OBJ_NOT_USED && tex->upload_frame != vgl_framecount) || (vgl_framecount - tex->last_frame > vgl_tex_cache_freq && tex->last_frame < OBJ_CACHED)) {
-			if (tex->next)
+			if (tex->next) {
 				tex->next->prev = NULL;
+			}
 			tex->last_frame = OBJ_CACHED;
 			SceGxmTextureFormat tex_format = vglGetTexFormat(&tex->gxm_tex);
 			uint8_t bpp = tex_format_to_bytespp(tex_format);
@@ -152,7 +154,7 @@ static inline __attribute__((always_inline)) uint32_t vgl_cache_old_textures(siz
 }
 #endif
 
-static int unsafe_allocator_counter = 0;
+int unsafe_allocator_counter = 0;
 void *gpu_alloc_mapped_aligned_unsafe_for_cpu(size_t alignment, size_t size) {
 	// Performing a garbage collection cycle prior to attempting to allocate the memory again
 	unsafe_allocator_counter++;
@@ -206,8 +208,9 @@ void *gpu_alloc_mapped_aligned_unsafe_for_gpu(size_t alignment, size_t size) {
 
 void *gpu_alloc_mapped_aligned_for_cpu(size_t alignment, size_t size) {
 	void *res = gpu_alloc_mapped_aligned_for_cpu_inner(alignment, size);
-	if (res)
+	if (res) {
 		return res;
+	}
 	
 #ifdef HAVE_TEX_CACHE
 	if (vgl_cache_old_textures(size) >= size) {
@@ -235,8 +238,9 @@ void *gpu_alloc_mapped_aligned_for_cpu(size_t alignment, size_t size) {
 
 void *gpu_alloc_mapped_aligned_for_gpu(size_t alignment, size_t size) {
 	void *res = gpu_alloc_mapped_aligned_for_gpu_inner(alignment, size);
-	if (res)
+	if (res) {
 		return res;
+	}
 	
 #ifdef HAVE_TEX_CACHE
 	if (vgl_cache_old_textures(size) >= size) {
@@ -325,10 +329,11 @@ void *gpu_alloc_palette(const void *data, uint32_t w, uint32_t bpe) {
 	void *texture_palette = gpu_alloc_mapped_aligned_for_gpu(SCE_GXM_PALETTE_ALIGNMENT, 256 * sizeof(uint32_t));
 
 	// Initializing palette
-	if (data == NULL)
+	if (data == NULL) {
 		vgl_memset(texture_palette, 0, 256 * sizeof(uint32_t));
-	else if (bpe == 4)
+	} else if (bpe == 4) {
 		vgl_fast_memcpy(texture_palette, data, w * sizeof(uint32_t));
+	}
 
 	// Returning palette
 	return texture_palette;
@@ -339,8 +344,9 @@ void gpu_alloc_cube_texture(uint32_t w, uint32_t h, SceGxmTextureFormat format, 
 	if (tex->status == TEX_VALID && tex->faces_counter >= 6) {
 		gpu_free_texture_data(tex);
 		tex->faces_counter = 1;
-	} else
+	} else {
 		tex->faces_counter++;
+	}
 
 	// Getting texture format bpp
 	uint8_t bpp = tex_format_to_bytespp(format);
@@ -365,8 +371,9 @@ void gpu_alloc_cube_texture(uint32_t w, uint32_t h, SceGxmTextureFormat format, 
 				dst_fmt, SCE_GXM_TRANSFER_SWIZZLED,
 				texture_data, 0, 0, VGL_ALIGN(w, 8) * bpp,
 				NULL, 0, NULL);
-		} else
+		} else {
 			vgl_memset(texture_data, 0, face_size);
+		}
 
 		// Initializing texture and validating it
 		tex->mip_count = 0;
@@ -385,8 +392,9 @@ void gpu_alloc_cube_texture(uint32_t w, uint32_t h, SceGxmTextureFormat format, 
 
 void gpu_alloc_texture(uint32_t w, uint32_t h, SceGxmTextureFormat format, const void *data, texture *tex, uint8_t src_bpp, uint32_t (*read_cb)(void *), void (*write_cb)(void *, uint32_t), GLboolean fast_store) {
 	// If there's already a texture in passed texture object we first dealloc it
-	if (tex->status == TEX_VALID)
+	if (tex->status == TEX_VALID) {
 		gpu_free_texture_data(tex);
+	}
 
 	// Getting texture format bpp
 	uint8_t bpp = tex_format_to_bytespp(format);
@@ -423,16 +431,18 @@ void gpu_alloc_texture(uint32_t w, uint32_t h, SceGxmTextureFormat format, const
 					}
 				}
 			}
-		} else
+		} else {
 			vgl_memset(texture_data, 0, tex_size);
+		}
 
 		// Initializing texture and validating it
 		tex->mip_count = 1;
 		vglInitLinearTexture(&tex->gxm_tex, texture_data, format, w, h, tex->mip_count);
-		if ((format & 0x9F000000U) == SCE_GXM_TEXTURE_BASE_FORMAT_P8)
+		if ((format & 0x9F000000U) == SCE_GXM_TEXTURE_BASE_FORMAT_P8) {
 			tex->palette_data = color_table;
-		else
+		} else {
 			tex->palette_data = NULL;
+		}
 		tex->status = TEX_VALID;
 		tex->data = texture_data;
 #ifndef TEXTURES_SPEEDHACK
@@ -446,8 +456,9 @@ void gpu_alloc_texture(uint32_t w, uint32_t h, SceGxmTextureFormat format, const
 
 void gpu_alloc_paletted_texture(int32_t level, uint32_t w, uint32_t h, SceGxmTextureFormat format, const void *data, texture *tex, uint8_t src_bpp, uint32_t (*read_cb)(void *)) {
 	// If there's already a texture in passed texture object we first dealloc it
-	if (tex->status == TEX_VALID)
+	if (tex->status == TEX_VALID) {
 		gpu_free_texture_data(tex);
+	}
 
 	// Check if the texture is P8
 	uint8_t is_p8 = tex_format_to_bytespp(format);
@@ -457,9 +468,14 @@ void gpu_alloc_paletted_texture(int32_t level, uint32_t w, uint32_t h, SceGxmTex
 	// Calculating texture data buffer size
 	uint32_t tex_size = 0;
 	for (int j = 0; j <= level; j++) {
-		tex_size += is_p8 ? (w * h) : (w * h / 2);
-		w /= 2;
-		h /= 2;
+		uint32_t aligned_w = VGL_ALIGN(w, 8);
+		tex_size += (is_p8 ? aligned_w : aligned_w / 2) * h;
+		if (w > 1) {
+			w /= 2;
+		}
+		if (h > 1) {
+			h /= 2;
+		}
 	}
 
 	// Allocating texture and palette data buffers
@@ -477,12 +493,29 @@ void gpu_alloc_paletted_texture(int32_t level, uint32_t w, uint32_t h, SceGxmTex
 		}
 
 		// Populating texture data
-		if (is_p8)
-			vgl_fast_memcpy(tex->data, src, tex_size);
-		else {
-			uint8_t *dst = (uint8_t *)tex->data;
-			for (int i = 0; i < tex_size; i++) {
-				dst[i] = ((src[i] & 0x0F) << 4) | (src[i] >> 4);
+		uint8_t *dst = (uint8_t *)tex->data;
+		uint32_t mip_w = orig_w;
+		uint32_t mip_h = orig_h;
+		for (int j = 0; j <= level; j++) {
+			uint32_t aligned_w = VGL_ALIGN(mip_w, 8);
+			uint32_t src_row_size = is_p8 ? mip_w : (mip_w + 1) / 2;
+			uint32_t dst_row_size = is_p8 ? aligned_w : aligned_w / 2;
+			for (uint32_t y = 0; y < mip_h; y++) {
+				if (is_p8) {
+					vgl_fast_memcpy(dst, src, src_row_size);
+				} else {
+					for (uint32_t x = 0; x < src_row_size; x++) {
+						dst[x] = ((src[x] & 0x0F) << 4) | (src[x] >> 4);
+					}
+				}
+				src += src_row_size;
+				dst += dst_row_size;
+			}
+			if (mip_w > 1) {
+				mip_w /= 2;
+			}
+			if (mip_h > 1) {
+				mip_h /= 2;
 			}
 		}
 	} else {
@@ -533,10 +566,12 @@ static inline __attribute__((always_inline)) int gpu_get_compressed_mipchain_siz
 
 	for (int currentLevel = 0; currentLevel <= level; currentLevel++) {
 		size += gpu_get_compressed_mip_size(currentLevel, width, height, format);
-		if (width > 1)
+		if (width > 1) {
 			width /= 2;
-		if (height > 1)
+		}
+		if (height > 1) {
 			height /= 2;
+		}
 	}
 
 	return size;
@@ -546,6 +581,7 @@ static inline __attribute__((always_inline)) int gpu_get_compressed_mip_offset(i
 	return gpu_get_compressed_mipchain_size(level - 1, width, height, format);
 }
 
+// Compressed transfer storage can be reused or reallocated by the next upload.
 void gpu_alloc_compressed_cube_texture(uint32_t w, uint32_t h, SceGxmTextureFormat format, uint32_t image_size, const void *data, texture *tex, uint8_t src_bpp, GLboolean uncompressed, int index) {
 	// If there's already a texture in passed texture object we first dealloc it
 	if (tex->status == TEX_VALID && tex->faces_counter >= 6) {
@@ -593,7 +629,7 @@ void gpu_alloc_compressed_cube_texture(uint32_t w, uint32_t h, SceGxmTextureForm
 				case SCE_GXM_TEXTURE_FORMAT_UBC2_ABGR:
 				case SCE_GXM_TEXTURE_FORMAT_UBC3_ABGR:
 				case SCE_GXM_TEXTURE_FORMAT_UBC5_GR:
-					if (aligned_width == w && aligned_height == h && h <= 2048 && w <= 2048) {
+					if (w >= 4 && h >= 4 && aligned_width == w && aligned_height == h && h <= 2048 && w <= 2048) {
 #ifdef TEXTURE_UPLOADS_SPEEDHACK
 						void *mapped_src = data;
 #else
@@ -603,6 +639,7 @@ void gpu_alloc_compressed_cube_texture(uint32_t w, uint32_t h, SceGxmTextureForm
 						sceGxmTransferCopy(w / 4, h / 4, 0, 0, SCE_GXM_TRANSFER_COLORKEY_NONE,
 							SCE_GXM_TRANSFER_FORMAT_RAW128, SCE_GXM_TRANSFER_LINEAR, mapped_src, 0, 0, w * 4,
 							SCE_GXM_TRANSFER_FORMAT_RAW128, SCE_GXM_TRANSFER_SWIZZLED, mip_data, 0, 0, w * 4, NULL, 0, NULL);
+						sceGxmTransferFinish();
 					} else {
 						SwizzleTexData128Bpp((uint8_t *)mip_data, (uint8_t *)data, 0, 0, ALIGNBLOCK(w, 4), ALIGNBLOCK(h, 4), ALIGNBLOCK(w, 4), ALIGNBLOCK(MIN(aligned_width, aligned_height), 4));
 					}
@@ -611,7 +648,7 @@ void gpu_alloc_compressed_cube_texture(uint32_t w, uint32_t h, SceGxmTextureForm
 					SwizzleTexDataETC1((uint8_t *)mip_data, (uint8_t *)data, 0, 0, ALIGNBLOCK(w, 4), ALIGNBLOCK(h, 4), ALIGNBLOCK(w, 4), ALIGNBLOCK(MIN(aligned_width, aligned_height), 4));
 					break;
 				case SCE_GXM_TEXTURE_FORMAT_PVRTII2BPP_ABGR:
-					if (aligned_width == w && aligned_height == h && h <= 2048) {
+					if (w >= 8 && h >= 4 && aligned_width == w && aligned_height == h && h <= 2048) {
 #ifdef TEXTURE_UPLOADS_SPEEDHACK
 						void *mapped_src = data;
 #else
@@ -621,12 +658,13 @@ void gpu_alloc_compressed_cube_texture(uint32_t w, uint32_t h, SceGxmTextureForm
 						sceGxmTransferCopy(w / 8, h / 4, 0, 0, SCE_GXM_TRANSFER_COLORKEY_NONE,
 							SCE_GXM_TRANSFER_FORMAT_RAW64, SCE_GXM_TRANSFER_LINEAR, mapped_src, 0, 0, w,
 							SCE_GXM_TRANSFER_FORMAT_RAW64, SCE_GXM_TRANSFER_SWIZZLED, mip_data, 0, 0, w, NULL, 0, NULL);
+						sceGxmTransferFinish();
 					} else {
 						SwizzleTexData64Bpp((uint8_t *)mip_data, (uint8_t *)data, 0, 0, ALIGNBLOCK(w, 8), ALIGNBLOCK(h, 4), ALIGNBLOCK(w, 8), MIN(ALIGNBLOCK(aligned_width, 8), ALIGNBLOCK(aligned_height, 4)));
 					}
 					break;
 				default:
-					if (aligned_width == w && aligned_height == h && h <= 2048) {
+					if (w >= 4 && h >= 4 && aligned_width == w && aligned_height == h && h <= 2048) {
 #ifdef TEXTURE_UPLOADS_SPEEDHACK
 						void *mapped_src = data;
 #else
@@ -636,6 +674,7 @@ void gpu_alloc_compressed_cube_texture(uint32_t w, uint32_t h, SceGxmTextureForm
 						sceGxmTransferCopy(w / 4, h / 4, 0, 0, SCE_GXM_TRANSFER_COLORKEY_NONE,
 							SCE_GXM_TRANSFER_FORMAT_RAW64, SCE_GXM_TRANSFER_LINEAR, mapped_src, 0, 0, w * 2,
 							SCE_GXM_TRANSFER_FORMAT_RAW64, SCE_GXM_TRANSFER_SWIZZLED, mip_data, 0, 0, w * 2, NULL, 0, NULL);
+						sceGxmTransferFinish();
 					} else {
 						SwizzleTexData64Bpp((uint8_t *)mip_data, (uint8_t *)data, 0, 0, ALIGNBLOCK(w, 4), ALIGNBLOCK(h, 4), ALIGNBLOCK(w, 4), ALIGNBLOCK(MIN(aligned_width, aligned_height), 4));
 					}
@@ -737,7 +776,7 @@ void gpu_alloc_compressed_texture(int32_t mip_level, uint32_t w, uint32_t h, Sce
 				case SCE_GXM_TEXTURE_FORMAT_UBC2_ABGR:
 				case SCE_GXM_TEXTURE_FORMAT_UBC3_ABGR:
 				case SCE_GXM_TEXTURE_FORMAT_UBC5_GR:
-					if (aligned_width == w && aligned_height == h && h <= 2048 && w <= 2048) {
+					if (w >= 4 && h >= 4 && aligned_width == w && aligned_height == h && h <= 2048 && w <= 2048) {
 #ifdef TEXTURE_UPLOADS_SPEEDHACK
 						void *mapped_src = data;
 #else
@@ -747,6 +786,7 @@ void gpu_alloc_compressed_texture(int32_t mip_level, uint32_t w, uint32_t h, Sce
 						sceGxmTransferCopy(w / 4, h / 4, 0, 0, SCE_GXM_TRANSFER_COLORKEY_NONE,
 							SCE_GXM_TRANSFER_FORMAT_RAW128, SCE_GXM_TRANSFER_LINEAR, mapped_src, 0, 0, w * 4,
 							SCE_GXM_TRANSFER_FORMAT_RAW128, SCE_GXM_TRANSFER_SWIZZLED, mip_data, 0, 0, w * 4, NULL, 0, NULL);
+						sceGxmTransferFinish();
 					} else {
 						SwizzleTexData128Bpp((uint8_t *)mip_data, (uint8_t *)data, 0, 0, ALIGNBLOCK(w, 4), ALIGNBLOCK(h, 4), ALIGNBLOCK(w, 4), ALIGNBLOCK(MIN(aligned_width, aligned_height), 4));
 					}
@@ -755,7 +795,7 @@ void gpu_alloc_compressed_texture(int32_t mip_level, uint32_t w, uint32_t h, Sce
 					SwizzleTexDataETC1((uint8_t *)mip_data, (uint8_t *)data, 0, 0, ALIGNBLOCK(w, 4), ALIGNBLOCK(h, 4), ALIGNBLOCK(w, 4), ALIGNBLOCK(MIN(aligned_width, aligned_height), 4));
 					break;
 				case SCE_GXM_TEXTURE_FORMAT_PVRTII2BPP_ABGR:
-					if (aligned_width == w && aligned_height == h && h <= 2048) {
+					if (w >= 8 && h >= 4 && aligned_width == w && aligned_height == h && h <= 2048) {
 #ifdef TEXTURE_UPLOADS_SPEEDHACK
 						void *mapped_src = data;
 #else
@@ -765,12 +805,13 @@ void gpu_alloc_compressed_texture(int32_t mip_level, uint32_t w, uint32_t h, Sce
 						sceGxmTransferCopy(w / 8, h / 4, 0, 0, SCE_GXM_TRANSFER_COLORKEY_NONE,
 							SCE_GXM_TRANSFER_FORMAT_RAW64, SCE_GXM_TRANSFER_LINEAR, mapped_src, 0, 0, w,
 							SCE_GXM_TRANSFER_FORMAT_RAW64, SCE_GXM_TRANSFER_SWIZZLED, mip_data, 0, 0, w, NULL, 0, NULL);
+						sceGxmTransferFinish();
 					} else {
 						SwizzleTexData64Bpp((uint8_t *)mip_data, (uint8_t *)data, 0, 0, ALIGNBLOCK(w, 8), ALIGNBLOCK(h, 4), ALIGNBLOCK(w, 8), MIN(ALIGNBLOCK(aligned_width, 8), ALIGNBLOCK(aligned_height, 4)));
 					}
 					break;
 				default:
-					if (aligned_width == w && aligned_height == h && h <= 2048) {
+					if (w >= 4 && h >= 4 && aligned_width == w && aligned_height == h && h <= 2048) {
 #ifdef TEXTURE_UPLOADS_SPEEDHACK
 						void *mapped_src = data;
 #else
@@ -780,6 +821,7 @@ void gpu_alloc_compressed_texture(int32_t mip_level, uint32_t w, uint32_t h, Sce
 						sceGxmTransferCopy(w / 4, h / 4, 0, 0, SCE_GXM_TRANSFER_COLORKEY_NONE,
 							SCE_GXM_TRANSFER_FORMAT_RAW64, SCE_GXM_TRANSFER_LINEAR, mapped_src, 0, 0, w * 2,
 							SCE_GXM_TRANSFER_FORMAT_RAW64, SCE_GXM_TRANSFER_SWIZZLED, mip_data, 0, 0, w * 2, NULL, 0, NULL);
+						sceGxmTransferFinish();
 					} else {
 						SwizzleTexData64Bpp((uint8_t *)mip_data, (uint8_t *)data, 0, 0, ALIGNBLOCK(w, 4), ALIGNBLOCK(h, 4), ALIGNBLOCK(w, 4), MIN(ALIGNBLOCK(aligned_width, 4), ALIGNBLOCK(aligned_height, 4)));
 					}

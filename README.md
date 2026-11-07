@@ -4,15 +4,18 @@ vitaGL is an opensource openGL driver for PSVITA development. It acts as a wrapp
 # Prerequisites
 In order to run an homebrew made with vitaGL, you are going to need libshacccg.suprx extracted and decrypted on your console. You can refer to this guide for more details about its extraction: https://samilops2.gitbook.io/vita-troubleshooting-guide/shader-compiler/extract-libshacccg.suprx<br>
 
+# Help and Troubleshooting
+
+If you plan to use vitaGL for one of your projects, you can find an official channel to get help with it on Vita Nuova discord server: https://discord.gg/Mz7MmktcuK
+
 # Build Instructions
 In order to build vitaGL use the following command: `make install`.
 <br>These are all the available flags usable when compiling the library:<br>
 ### Debug Flags
 | Flag | Description |
 | --- | --- |
-| `HAVE_SHARK_LOG=1`|  Enables logging support in runtime shader compiler.|
+|`HAVE_SHARK_LOG=1`|  Enables logging support in runtime shader compiler.|
 |`LOG_ERRORS=1`| Errors will be logged with sceClibPrintf.|
-|`LOG_ERRORS=2`| Errors will be logged to ux0:data/vitaGL.log.|
 |`HAVE_PROFILING=1`| Enables lightweighted profiler for CPU time spent in draw calls.|
 |`HAVE_DEBUGGER=1`| Enables lightweighted on screen debugger interface.|
 |`HAVE_DEBUGGER=2`| Enables lightweighted on screen debugger interface with extra information (devkit only).|
@@ -40,6 +43,7 @@ In order to build vitaGL use the following command: `make install`.
 |`UNPURE_TEXFORMATS=1`| Enables support for texture dimensions different than 2D (tex2D is still required in shader code).|
 |`ENABLE_LEGACY_PIPELINE=1`| Enables support for the legacy vglDrawObjects pipeline.|
 |`HAVE_FIXED_ATTRIBUTES=1`| Enables experimental support for GL_FIXED attributes in shaders when GLSL shaders are used.|
+|`HAVE_ACCURATE_MSAA=1`| Enables `GL_EXT_multisampled_render_to_texture` extension support, replacing global MSAA handling.|
 ### Hack Flags
 | Flag | Description |
 | --- | --- |
@@ -77,6 +81,7 @@ In order to build vitaGL use the following command: `make install`.
 |`DISABLE_FFP_MULTITEXTURE=1`| Disables multitexture processing during draw calls performed with fixed function pipeline.|
 |`HAVE_WRAPPED_ALLOCATORS=1`| Allows usage of vgl allocators inside wrapped allocators.|
 |`HAVE_SHADER_CACHE=1`| Enables fast automatic file caching (based on XH3 xxHash algorithm) for application provided shaders.|
+|`HAVE_VERTEX_LAYOUT_CACHE=1`| Enables vertex attributes/streams layouts caching with shaders pipeline. May improve performances.|
 |`NO_CLIB=1`| Disables sceClib functions usage for easier debugging at the cost of slightly slower CPU code.|
 |`DISABLE_W_CLAMPING=1`| Disables W clamping during viewport calculation. Might fix some glitches.|
 |`NO_TILE_CLIPPER=1`| Disables early tile clipping for scissor testing. Slightly reduces CPU workload but increases GPU workload.|

@@ -31,6 +31,30 @@ extern SceGxmContext *gxm_context;
 void vglSetupUniformCircularPool(void);
 void *vglReserveUniformCircularPoolBuffer(uint32_t size);
 
+#ifdef HAVE_PROFILING
+typedef struct {
+	uint32_t calls_num;
+	uint32_t hits;
+	uint32_t mru_hits;
+	uint32_t table_hits;
+	uint32_t gen_calls;
+	uint32_t evictions;
+#if defined(HAVE_VERTEX_LAYOUT_CACHE) && !defined(STRICT_DRAW_COMPLIANCE) && !defined(DRAW_SPEEDHACK)
+	uint32_t layout_hits;
+	uint32_t layout_misses;
+#endif
+	uint32_t total_us;
+	uint32_t mru_us;
+	uint32_t table_us;
+	uint32_t gen_us;
+} vgl_vertex_program_cache_stats;
+extern vgl_vertex_program_cache_stats vgl_vcache_stats;
+#endif
+
+int vglCreateVertexProgram(SceGxmShaderPatcherId id, const SceGxmVertexAttribute *attr, uint32_t attr_num, const SceGxmVertexStream *stream, uint32_t stream_num, SceGxmVertexProgram **prog);
+void vglVertexProgramCacheReset(void);
+void vglVertexProgramCacheInvalidate(SceGxmShaderPatcherId id);
+
 void vglSetUniformData(uint8_t *uniformBuffer, const SceGxmParameterType t, const int offset, const uint32_t count, const uint32_t componentCount, const void *sourceData, const SceGxmParameterType input_type);
 
 static inline __attribute__((always_inline)) void vglRestoreFragmentUniformBuffer(void) {
@@ -145,7 +169,15 @@ static inline __attribute__((always_inline)) int vglDepthStencilSurfaceInit(SceG
 	s[2] = (uint32_t)stencilData;
 #endif
 	s[3] = 0x3F800000;
-	s[4] = 0x300;
+	s[4] = 0x200;
 	return 0;
+}
+static inline __attribute__((always_inline)) void vglDepthStencilSurfaceSetBackgroundMask(SceGxmDepthStencilSurface *surface, uint8_t enable) {
+	uint32_t *s = (uint32_t *)surface;
+	if (enable) {
+		s[4] |= 0x100;
+	} else {
+		s[4] &= ~0x100;
+	}
 }
 #endif

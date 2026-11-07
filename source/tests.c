@@ -36,6 +36,9 @@ scissor_region region; // Current scissor test region setup
 GLboolean scissor_test_state = GL_FALSE; // Current state for GL_SCISSOR_TEST
 SceGxmFragmentProgram *scissor_test_fragment_program; // Scissor test fragment program
 vector4f *scissor_test_vertices = NULL; // Scissor test region vertices
+#ifndef STORE_DEPTH_STENCIL
+GLboolean skip_scissor_invalidation = GL_TRUE; // Flag whether to skip mask update bit invalidation pass during scissor test region update
+#endif
 
 // Stencil Test
 uint8_t stencil_mask_front = 0xFF; // Current in use mask for stencil test on front
@@ -289,14 +292,21 @@ void update_scissor_test() {
 	sceGxmSetRegionClip(gxm_context, SCE_GXM_REGION_CLIP_OUTSIDE, 0, 0, active_w - 1, active_h - 1);
 #endif
 	
+#ifdef STORE_DEPTH_STENCIL
 	if (scissor_test_state) {
+#else
+	if (skip_scissor_invalidation) {
+		skip_scissor_invalidation = GL_FALSE;
+		if (scissor_test_state) {
+			// Calculating scissor test region vertices
+			vector4f_convert_to_local_space(scissor_test_vertices, region.x, region.y, region.w, region.h);
+		}
+	} else if (scissor_test_state) {
+#endif
 		// Calculating scissor test region vertices
 		vector4f_convert_to_local_space(scissor_test_vertices, region.x, region.y, region.w, region.h);
 
-		void *vertex_buffer;
-		sceGxmReserveVertexDefaultUniformBuffer(gxm_context, &vertex_buffer);
-		sceGxmSetUniformDataF(vertex_buffer, clear_position, 0, 4, &clear_vertices->x);
-		sceGxmSetUniformDataF(vertex_buffer, clear_depth, 0, 1, &scissor_depth);
+		sceGxmSetPrecomputedVertexState(gxm_context, &scissor_clear_vertex_state);
 
 		// Cleaning stencil surface mask update bit on the whole screen
 		sceGxmSetFrontStencilFunc(gxm_context,
@@ -311,7 +321,9 @@ void update_scissor_test() {
 			SCE_GXM_STENCIL_OP_KEEP,
 			SCE_GXM_STENCIL_OP_KEEP,
 			0, 0);
-		sceGxmDraw(gxm_context, SCE_GXM_PRIMITIVE_TRIANGLE_FAN, SCE_GXM_INDEX_FORMAT_U16, depth_clear_indices, 4);
+		sceGxmDrawPrecomputed(gxm_context, &clear_draw_state);
+
+		sceGxmSetPrecomputedVertexState(gxm_context, NULL);
 	}
 
 	// Setting stencil surface mask update bit on the scissor test region
@@ -330,10 +342,10 @@ void update_scissor_test() {
 
 	void *vertex_buffer;
 	sceGxmReserveVertexDefaultUniformBuffer(gxm_context, &vertex_buffer);
-	sceGxmSetUniformDataF(vertex_buffer, clear_position, 0, 4, scissor_test_state ? &scissor_test_vertices->x : &clear_vertices->x);
-	sceGxmSetUniformDataF(vertex_buffer, clear_depth, 0, 1, &scissor_depth);
+	vglSetUniformData((uint8_t *)vertex_buffer + clear_position_offset, SCE_GXM_PARAMETER_TYPE_F32, 0, 1, 4, scissor_test_state ? &scissor_test_vertices->x : &clear_vertices->x, SCE_GXM_PARAMETER_TYPE_F32);
+	vglSetUniformData((uint8_t *)vertex_buffer + clear_depth_offset, SCE_GXM_PARAMETER_TYPE_F32, 0, 1, 1, &scissor_depth, SCE_GXM_PARAMETER_TYPE_F32);
 
-	sceGxmDraw(gxm_context, SCE_GXM_PRIMITIVE_TRIANGLE_FAN, SCE_GXM_INDEX_FORMAT_U16, depth_clear_indices, 4);
+	sceGxmDrawPrecomputed(gxm_context, &clear_draw_state);
 
 	// Restoring viewport and culling
 	validate_viewport();
@@ -387,8 +399,9 @@ void glScissor(GLint x, GLint y, GLsizei width, GLsizei height) {
 	region.gl_w = width;
 	region.gl_h = height;
 
-	if (scissor_test_state)
+	if (scissor_test_state) {
 		dirty_scissor_state = GL_TRUE;
+	}
 }
 
 void glDepthFunc(GLenum func) {

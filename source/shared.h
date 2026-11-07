@@ -26,6 +26,7 @@
 #define _SHARED_H_
 #include <vitasdk.h>
 #include "vitaGL.h"
+#include "shader_diagnostics.h"
 
 // Internal constants
 #define TEXTURES_NUM 16384 // Available textures
@@ -125,6 +126,7 @@ extern void *vdm_ring_buffer_addr[GXM_CONTEXTS_NUM]; // VDM ring buffer memblock
 extern void *vertex_ring_buffer_addr[GXM_CONTEXTS_NUM]; // vertex ring buffer memblock starting address
 extern void *fragment_ring_buffer_addr[GXM_CONTEXTS_NUM]; // fragment ring buffer memblock starting address
 extern void *fragment_usse_ring_buffer_addr[GXM_CONTEXTS_NUM]; // fragment USSE ring buffer memblock starting address
+extern SceGxmShaderPatcher *gxm_shader_patcher; // sceGxmShaderPatcher shader patcher instance
 
 // sceDisplay callback data struct
 struct display_queue_callback_data { void *addr; };
@@ -297,12 +299,16 @@ extern int NEW_DISPLAY_HEIGHT; // Requested new display height in pixels
 #include "texture_callbacks.h"
 
 // Fixed-function pipeline shader cache settings
-#define FFP_SHADER_CACHE_MAGIC 28 // This must be increased whenever ffp shader sources or shader mask/combiner mask changes
-//#define DUMP_SHADER_SOURCES // Enable this flag to dump shader sources inside shader cache
+#define FFP_SHADER_CACHE_MAGIC 31 // This must be increased whenever ffp shader sources or shader mask/combiner mask changes
+
+extern char vgl_ffp_cache_path[256];
+#ifdef HAVE_RAZOR
+extern char vgl_gpu_crash_path[256];
+#endif
 
 // Custom shaders pipeline shader cache settings
 #ifdef HAVE_SHADER_CACHE
-#define SHADER_CACHE_MAGIC 0
+#define SHADER_CACHE_MAGIC 3
 extern char vgl_shader_cache_path[256];
 #endif
 
@@ -454,30 +460,32 @@ extern GLboolean prim_is_non_native; // Flag for when a primitive not supported 
 	vgl_error = x; \
 	return y;
 
+extern size_t max_vcache_size;
+extern size_t max_fcache_size;
+static inline __attribute__((always_inline)) void patch_vertex_program(SceGxmShaderPatcherId id, const SceGxmVertexAttribute *attr, uint32_t attr_num, const SceGxmVertexStream *stream, uint32_t stream_num, SceGxmVertexProgram **prog) {
+	int r = vglCreateVertexProgram(id, attr, attr_num, stream, stream_num, prog);
 #ifdef LOG_ERRORS
-#define patch_vertex_program(patcher, id, attr, attr_num, stream, stream_num, prog) \
-	int __v = sceGxmShaderPatcherCreateVertexProgram(patcher, id, attr, attr_num, stream, stream_num, prog); \
-	if (__v) \
-		vgl_log("Vertex shader patching failed (%s) on shader 0x%X with %d attributes and %d streams.\n", get_gxm_error_literal(__v), id, attr_num, stream_num);
-#define patch_fragment_program(patcher, id, fmt, msaa_mode, blend_cfg, vertex_link, prog) \
-	int __f = sceGxmShaderPatcherCreateFragmentProgram(patcher, id, fmt, msaa_mode, blend_cfg, vertex_link, prog); \
-	if (__f) \
-		vgl_log("Fragment shader patching failed (%s) on shader 0x%X.\n", get_gxm_error_literal(__f), id);
-#else
-#define patch_vertex_program sceGxmShaderPatcherCreateVertexProgram
-#define patch_fragment_program sceGxmShaderPatcherCreateFragmentProgram
+	if (r) {
+		vgl_log("Vertex shader patching failed (%s) on shader 0x%X with %d attributes and %d streams.\n", get_gxm_error_literal(r), id, attr_num, stream_num);
+		return;
+	}
 #endif
+}
+static inline __attribute__((always_inline)) void patch_fragment_program(SceGxmShaderPatcherId id, SceGxmOutputRegisterFormat fmt, SceGxmMultisampleMode msaa_mode, const SceGxmBlendInfo *blend_cfg, const SceGxmProgram *vertex_link, SceGxmFragmentProgram **prog) {
+	uint64_t start = vgl_diag_begin(VGL_SHADER_DIAG_FRAGMENT_PATCH);
+	int r = sceGxmShaderPatcherCreateFragmentProgram(gxm_shader_patcher, id, fmt, msaa_mode, blend_cfg, vertex_link, prog);
+	vgl_diag_end(VGL_SHADER_DIAG_FRAGMENT_PATCH, start, r == 0);
+#ifdef LOG_ERRORS
+	if (r) {
+		vgl_log("Fragment shader patching failed (%s) on shader 0x%X.\n", get_gxm_error_literal(r), id);
+		return;
+	}
+#endif
+}
 
-#define recalculate_normal_matrix() \
-	matrix3x3 inverted; \
-	matrix3x3 top_modelview_matrix; \
-	vgl_fast_memcpy(top_modelview_matrix[0], modelview_matrix[0], sizeof(float) * 3); \
-	vgl_fast_memcpy(top_modelview_matrix[1], modelview_matrix[1], sizeof(float) * 3); \
-	vgl_fast_memcpy(top_modelview_matrix[2], modelview_matrix[2], sizeof(float) * 3); \
-	matrix3x3_invert(inverted, top_modelview_matrix); \
-	matrix3x3_transpose(normal_matrix, inverted);
+#define recalculate_normal_matrix() matrix4x4_normal_matrix(normal_matrix, modelview_matrix)
 
-#define rebuild_frag_shader(x, y, z, w) patch_fragment_program(gxm_shader_patcher, x, w, msaa_mode, &blend_info.info, z, y) // Creates a new patched fragment program with proper blend settings
+#define rebuild_frag_shader(x, y, z, w) patch_fragment_program(x, w, VGL_ACTIVE_MSAA_MODE, &blend_info.info, z, y) // Creates a new patched fragment program with proper blend settings
 
 #ifdef HAVE_SOFTFP_ABI
 extern __attribute__((naked)) void sceGxmSetViewport_sfp(SceGxmContext *context, float xOffset, float xScale, float yOffset, float yScale, float zOffset, float zScale);
@@ -584,6 +592,15 @@ enum {
 	DEPTHBUFFER_READY
 };
 
+#ifndef DEPTH_STENCIL_HACK
+static inline __attribute__((always_inline)) void mark_depth_stencil_as_dirty(SceGxmDepthStencilSurface *surface) {
+	mark_as_dirty(surface->depthData);
+	if (surface->stencilData) {
+		mark_as_dirty(surface->stencilData);
+	}
+}
+#endif
+
 // Framebuffer struct
 typedef struct {
 	GLboolean active;
@@ -599,6 +616,9 @@ typedef struct {
 	int stride;
 	void *data;
 	texture *tex;
+#ifdef HAVE_ACCURATE_MSAA
+	SceGxmMultisampleMode msaa_mode;
+#endif
 } framebuffer;
 
 // Query struct
@@ -636,6 +656,8 @@ typedef enum {
 	COMBINE,
 	ADD_SIGNED = 1,
 	INTERPOLATE = 2,
+	DOT3_RGB = 6,
+	DOT3_RGBA = 7
 } texenv_mode;
 
 #ifndef DISABLE_TEXTURE_COMBINER
@@ -669,6 +691,9 @@ typedef struct {
 // VAO struct
 typedef struct {
 	uint32_t index_array_unit;
+#if defined(HAVE_VERTEX_LAYOUT_CACHE) && !defined(STRICT_DRAW_COMPLIANCE) && !defined(DRAW_SPEEDHACK)
+	uint32_t vertex_layout_version;
+#endif
 	uint8_t vertex_attrib_size[VERTEX_ATTRIBS_NUM];
 	uint32_t vertex_attrib_offsets[VERTEX_ATTRIBS_NUM];
 	uint32_t vertex_attrib_vbo[VERTEX_ATTRIBS_NUM];
@@ -681,6 +706,10 @@ typedef struct {
 	float *vertex_attrib_pool_ptr;
 	float *vertex_attrib_pool_limit;
 } vao;
+
+#if defined(HAVE_VERTEX_LAYOUT_CACHE) && !defined(STRICT_DRAW_COMPLIANCE) && !defined(DRAW_SPEEDHACK)
+extern uint32_t vertex_layout_cur_ver;
+#endif
 
 // 3D vertex for position + 4D vertex for RGBA color struct
 typedef struct {
@@ -799,7 +828,7 @@ typedef struct {
 // Generic shader struct
 typedef struct {
 	GLenum type;
-	GLboolean valid;
+	uint16_t slot;
 	GLboolean dirty;
 	GLboolean is_glsl;
 	binds_map semantics;
@@ -846,6 +875,14 @@ extern legacy_vtx_attachment current_vtx;
 extern void *frag_uniforms;
 extern void *vert_uniforms;
 extern SceGxmMultisampleMode msaa_mode;
+#ifdef HAVE_ACCURATE_MSAA
+#define VGL_FRAMEBUFFER_MSAA(fb) fb->msaa_mode
+#define VGL_ACTIVE_MSAA_MODE (active_write_fb ? active_write_fb->msaa_mode : msaa_mode)
+void refresh_builtin_programs(SceGxmMultisampleMode mode);
+#else
+#define VGL_FRAMEBUFFER_MSAA(fb) msaa_mode
+#define VGL_ACTIVE_MSAA_MODE msaa_mode
+#endif
 extern void *gxm_color_surfaces_addr[DISPLAY_MAX_BUFFER_COUNT]; // Display color surfaces memblock starting addresses
 extern SceGxmColorSurface gxm_color_surfaces[DISPLAY_MAX_BUFFER_COUNT]; // Display color surfaces
 extern unsigned int gxm_back_buffer_index; // Display back buffer id
@@ -861,7 +898,7 @@ extern uint16_t *default_line_strips_idx_ptr; // sceGxm mapped progressive indic
 extern int garbage_collector(unsigned int args, void *arg); // Garbage collector function
 #endif
 extern SceUID gc_mutex[2]; // Garbage collector mutex
-extern GLboolean has_cached_mem; // Flag for wether to use cached memory for mempools or not
+extern GLboolean has_cached_mem; // Flag for whether to use cached memory for mempools or not
 extern uint8_t gxm_display_buffer_count; // Display buffers count
 
 extern int legacy_pool_size; // Mempool size for GL1 immediate draw pipeline
@@ -871,12 +908,6 @@ extern float *legacy_pool_ptr; // Current address for vertices population for GL
 extern float *legacy_pool_end; // Address of the end of the GL1 immediate draw pipeline vertex pool
 #endif
 extern uint32_t vgl_framecount; // Current frame number since application started
-extern SceGxmVertexAttribute legacy_vertex_attrib_config[FFP_VERTEX_ATTRIBS_NUM - 1];
-extern SceGxmVertexStream legacy_vertex_stream_config[FFP_VERTEX_ATTRIBS_NUM - 1];
-extern SceGxmVertexAttribute legacy_mt_vertex_attrib_config[FFP_VERTEX_ATTRIBS_NUM];
-extern SceGxmVertexStream legacy_mt_vertex_stream_config[FFP_VERTEX_ATTRIBS_NUM];
-extern SceGxmVertexAttribute legacy_nt_vertex_attrib_config[FFP_VERTEX_ATTRIBS_NUM - 2];
-extern SceGxmVertexStream legacy_nt_vertex_stream_config[FFP_VERTEX_ATTRIBS_NUM - 2];
 extern SceGxmVertexAttribute ffp_vertex_attrib_config[FFP_VERTEX_ATTRIBS_NUM];
 extern SceGxmVertexStream ffp_vertex_stream_config[FFP_VERTEX_ATTRIBS_NUM];
 
@@ -987,6 +1018,7 @@ extern GLboolean dirty_shader_vert_unifs;
 // Internal fixed function pipeline dirty flags and variables
 extern GLboolean ffp_dirty_frag;
 extern GLboolean ffp_dirty_vert;
+extern uint16_t ffp_dirty_vert_attr;
 extern uint16_t ffp_vertex_attrib_state;
 extern uint8_t ffp_vertex_num_params;
 
@@ -1014,7 +1046,6 @@ extern float fullscreen_z_scale;
 
 extern SceGxmContext *gxm_context; // sceGxm context instance
 extern GLenum vgl_error; // Error returned by glGetError
-extern SceGxmShaderPatcher *gxm_shader_patcher; // sceGxmShaderPatcher shader patcher instance
 extern SceGxmDepthStencilSurface gxm_depth_stencil_surface; // Depth/Stencil surfaces setup for sceGxm
 extern GLboolean system_app_mode; // Flag for system app mode usage
 
@@ -1040,6 +1071,13 @@ extern GLboolean depth_mask_state; // Current state for glDepthMask
 // Scissor Test
 extern scissor_region region; // Current scissor test region setup
 extern GLboolean scissor_test_state; // Current state for GL_SCISSOR_TEST
+extern SceGxmPrecomputedVertexState scissor_clear_vertex_state; // Precomputed vertex state for the fullscreen mask clear
+extern SceGxmPrecomputedDraw clear_draw_state; // Precomputed draw state for fullscreen clear draws
+extern SceGxmPrecomputedDraw blit_draw_state; // Precomputed draw state for framebuffer blits
+extern uint32_t clear_position_offset;
+extern uint32_t clear_depth_offset;
+extern uint32_t blit_position_offset;
+extern uint32_t blit_texcoord_offset;
 
 // Stencil Test
 extern uint8_t stencil_mask_front; // Current in use mask for stencil test on front
@@ -1147,6 +1185,7 @@ extern GLboolean srgb_mode; // SRGB mode for color output
 extern display_list *curr_display_list; // Current display list being generated
 extern GLboolean display_list_execute; // Flag to check if compiled function should be executed as well
 extern GLboolean _vgl_enqueue_list_func(void (*func)(), dlist_func_type type, ...);
+extern GLboolean _vgl_enqueue_list_func_with_ptr(void (*func)(), dlist_func_type type, uint8_t ptr_arg, const void *data, uint32_t data_size, ...);
 
 // vgl* Draw Pipeline
 extern void *vertex_object;
@@ -1171,7 +1210,7 @@ extern uint32_t uniform_array_unit; // Current in-use uniform buffer unit
 
 extern GLenum orig_depth_test; // Original depth test state (used for depth test invalidation)
 extern framebuffer *in_use_framebuffer; // Currently in use framebuffer
-extern uint8_t dirty_framebuffer; // Flag wether current in use framebuffer is invalidated
+extern uint8_t dirty_framebuffer; // Flag whether current in use framebuffer is invalidated
 
 // Scissor test shaders
 extern SceGxmFragmentProgram *scissor_test_fragment_program; // Scissor test fragment program
@@ -1199,7 +1238,6 @@ void init_gxm(void); // Inits sceGxm
 void init_gxm_context(SceGxmContext **ctx, uint8_t ctx_slot); // Inits sceGxm context
 void create_display_render_target(void); // Creates render target for the display
 void init_display_color_surfaces(GLboolean is_swap); // Creates color surfaces for the display
-void init_depth_stencil_buffer(uint32_t w, uint32_t h, SceGxmDepthStencilSurface *surface, GLboolean has_stencil); // Creates depth and stencil surfaces
 void init_display_depth_stencil_surfaces(void); // Creates depth and stencil surfaces for the display
 void start_shader_patcher(void); // Creates a shader patcher instance
 void scene_reset(void); // Resets drawing scene if required
@@ -1219,6 +1257,7 @@ GLboolean change_stencil_func_config(SceGxmStencilFunc *cfg, GLenum new_cfg); //
 void update_alpha_test_settings(void); // Changes current in use alpha test operation value
 void update_scissor_test(void); // Changes current in use scissor test region
 void reset_scissor_test_region(void); // Resets scissor test region to default values
+void update_scissor_test_uniforms(void); // Updates scissor test region update uniforms
 void invalidate_viewport(void); // Invalidates currently set viewport
 void validate_viewport(void); // Restores previously invalidated viewport
 
@@ -1360,7 +1399,7 @@ static inline __attribute__((always_inline)) void _glFramebufferTexture2D(frameb
 			}
 			if (fb->depthbuffer_ptr) {
 #ifndef DEPTH_STENCIL_HACK
-				mark_as_dirty(fb->depthbuffer_ptr->depthData);
+				mark_depth_stencil_as_dirty(fb->depthbuffer_ptr);
 #endif
 				fb->depthbuffer_ptr = NULL;
 				fb->depthbuffer_state &= ~DEPTHBUFFER_READY;
@@ -1376,7 +1415,7 @@ static inline __attribute__((always_inline)) void _glFramebufferTexture2D(frameb
 
 		// Allocating colorbuffer
 		sceGxmColorSurfaceInit(&fb->colorbuffer, get_color_from_texture(fmt), SCE_GXM_COLOR_SURFACE_LINEAR,
-			msaa_mode == SCE_GXM_MULTISAMPLE_NONE ? SCE_GXM_COLOR_SURFACE_SCALE_NONE : SCE_GXM_COLOR_SURFACE_SCALE_MSAA_DOWNSCALE,
+			VGL_FRAMEBUFFER_MSAA(fb) == SCE_GXM_MULTISAMPLE_NONE ? SCE_GXM_COLOR_SURFACE_SCALE_NONE : SCE_GXM_COLOR_SURFACE_SCALE_MSAA_DOWNSCALE,
 			fb->is_float ? SCE_GXM_OUTPUT_REGISTER_SIZE_64BIT : SCE_GXM_OUTPUT_REGISTER_SIZE_32BIT,
 			fb->width, fb->height, VGL_ALIGN(fb->width, 8), fb->data);
 		

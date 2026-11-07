@@ -23,6 +23,12 @@ extern razor_results razor_metrics;
 #endif
 
 void glPushGroupMarker(GLsizei length, const GLchar *marker) {
+#ifndef SKIP_ERROR_HANDLING
+	size_t len = strlen(marker);
+	if (len > 64) {
+		vgl_log("%s:%d %s: Debug marker too long (%u). It will be truncated to 64 characters.\n", __FILE__, __LINE__, __func__, len);
+	}
+#endif
 	sceGxmPushUserMarker(gxm_context, marker);
 }
 
@@ -111,7 +117,7 @@ static void vgl_debugger_draw_mem_usage(const char *str, vglMemType type, int y_
 static inline __attribute__((always_inline)) void vgl_debugger_draw_mem_usage_metrics(int y_disp) {
 	vgl_debugger_draw_mem_usage("RAM Usage", VGL_MEM_RAM, y_disp);
 	vgl_debugger_draw_mem_usage("VRAM Usage", VGL_MEM_VRAM, y_disp);
-	vgl_debugger_draw_mem_usage("Phycont RAM Usage", VGL_MEM_SLOW, y_disp);
+	vgl_debugger_draw_mem_usage("Phycont RAM Usage", VGL_MEM_PHYCONT, y_disp);
 	vgl_debugger_draw_mem_usage("CDLG RAM Usage", VGL_MEM_BUDGET, y_disp);
 }
 
@@ -212,21 +218,6 @@ void vgl_debugger_draw(uint32_t *fb) {
 	vgl_debugger_draw_string_format(5, dbg_y += y_disp, vgl_debugger_get_color_by_percentage(percentage), "Circular Pool Peak Usage: %lu Bytes (%.0f%%)", vgl_circular_pool_global_peak, percentage);
 #endif	
 	vgl_debugger_draw_string_format(5, dbg_y += y_disp, 0xFFFFFFFF, "Frame Number: %lu", vgl_framecount);
-}
-#endif
-
-#ifdef FILE_LOG
-static char msg[512 * 1024];
-void vgl_file_log(const char *format, ...) {
-	__gnuc_va_list arg;
-	va_start(arg, format);
-	vsnprintf(msg, sizeof(msg), format, arg);
-	va_end(arg);
-	SceUID log = sceIoOpen("ux0:/data/vitaGL.log", SCE_O_WRONLY | SCE_O_APPEND | SCE_O_CREAT, 0777);
-	if (log >= 0) {
-		sceIoWrite(log, msg, strlen(msg));
-		sceIoClose(log);
-	}
 }
 #endif
 

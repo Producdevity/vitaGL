@@ -11,6 +11,7 @@ R"(#define clip_planes_num %d
 #define num_textures %d
 #define has_colors %d
 #define lights_num %d
+#define lighting %d
 #define shading_mode %d
 #define normalization %d
 #define fixed_mode_mask %d
@@ -34,17 +35,20 @@ R"(#define clip_planes_num %d
 #define GLFixed3ToFloat3(fx3) (float3(GLFixedToFloat(fx3.x), GLFixedToFloat(fx3.y), GLFixedToFloat(fx3.z)))
 #define GLFixed4ToFloat4(fx4) (float4(GLFixedToFloat(fx4.x), GLFixedToFloat(fx4.y), GLFixedToFloat(fx4.z), GLFixedToFloat(fx4.w)))
 
+#if lighting == 1 && shading_mode < 1 // GL_SMOOTH/GL_FLAT
+uniform float4 Flight_global_ambient;
+#endif
+
 #if lights_num > 0 && shading_mode < 1 // GL_SMOOTH/GL_FLAT
 uniform float4 Alights_ambients[lights_num];
 uniform float4 Blights_diffuses[lights_num];
 uniform float4 Clights_speculars[lights_num];
 uniform float4 Dlights_positions[lights_num];
 uniform float3 Elights_attenuations[lights_num];
-uniform float4 Flight_global_ambient;
 uniform float Gshininess;
 
 void point_light(short i, float3 normal, float3 position, float4 inout Ambient, float4 inout Diffuse, float4 inout Specular) {
-	float3 VP = Dlights_positions[i].xyz - position;
+	float3 VP = (Dlights_positions[i].xyz / Dlights_positions[i].w) - position;
 	float d = length(VP);
 	VP = normalize(VP);
 	float attenuation = 1.0f / (Elights_attenuations[i].x +
@@ -61,18 +65,19 @@ void point_light(short i, float3 normal, float3 position, float4 inout Ambient, 
 }
 
 void directional_light(short i, float3 normal, float3 position, float4 inout Ambient, float4 inout Diffuse, float4 inout Specular) {
-	float nDotVP = max(0.0f, dot(normal, normalize(Dlights_positions[i].xyz)));
+	float3 VP = normalize(Dlights_positions[i].xyz);
+	float nDotVP = max(0.0f, dot(normal, VP));
 		
 	Ambient += Alights_ambients[i];
 	Diffuse += Blights_diffuses[i] * nDotVP;
 	if (nDotVP != 0.0f) {
-		float nDotHV = max(0.0f, dot(normal, normalize(Dlights_positions[i].xyz - position)));
+		float nDotHV = max(0.0f, dot(normal, normalize(VP + float3(0.0f, 0.0f, 1.0f))));
 		Specular += Clights_speculars[i] * pow(nDotHV, Gshininess);
 	}
 }
 
 void calculate_light(short i, float3 ecPosition, float3 N, float4 inout Ambient, float4 inout Diffuse, float4 inout Specular) {
-	if (Dlights_positions[i].w == 1.0f)
+	if (Dlights_positions[i].w != 0.0f)
 		point_light(i, N, ecPosition, Ambient, Diffuse, Specular);
 	else
 		directional_light(i, N, ecPosition, Ambient, Diffuse, Specular);
@@ -90,14 +95,18 @@ void main(
 #endif
 #endif
 #endif
-#if has_colors == 1 || lights_num > 0
+#if has_colors == 1 || lighting == 1
 	float4 Pcolor, // We re-use this for ambient values when lighting is on
 #endif
-#if lights_num > 0
+#if lighting == 1
 	float4 Qdiff,
+#if lights_num > 0
 	float4 Rspec,
+#endif
 	float4 Semission,
+#if lights_num > 0
 	float3 Tnormals,
+#endif
 #endif
 #if num_textures > 0
 	float2 out vTexcoord : TEXCOORD0,
@@ -108,15 +117,20 @@ void main(
 #endif
 #endif
 #endif
-#if lights_num > 0 && shading_mode == 1 // GL_PHONG_WIN
+#if lighting == 1 && shading_mode == 1 // GL_PHONG_WIN
+#if lights_num > 0
 	float3 out vNormal : TEXCOORD3,
 	float3 out vEcPosition : TEXCOORD4,
 	float4 out vDiffuse : TEXCOORD5,
 	float4 out vSpecular : TEXCOORD6,
 	float4 out vEmission : TEXCOORD7,
+#else
+	float4 out vDiffuse : TEXCOORD3,
+	float4 out vEmission : TEXCOORD4,
+#endif
 #endif
 	float4 out vPosition : POSITION,
-#if has_colors == 1 || lights_num > 0
+#if has_colors == 1 || lighting == 1
 	float4 out vColor : COLOR,
 #endif
 	float out psize : PSIZE,
@@ -124,7 +138,7 @@ void main(
 	float out vClip[clip_planes_num] : CLP0,
 	uniform float4 Hclip_planes_eq[clip_planes_num],
 #endif
-#if clip_planes_num > 0 || lights_num > 0 || calculate_wvp == 1
+#if clip_planes_num > 0 || lighting == 1 || calculate_wvp == 1
 	uniform float4x4 Imodelview,
 #endif
 	uniform float4x4 Jwvp,
@@ -146,7 +160,7 @@ void main(
 #if calculate_wvp == 1
 	Jwvp = mul(Jwvp, Imodelview); // Jwvp is actually the proj matrix
 #endif
-#if clip_planes_num > 0 || lights_num > 0
+#if clip_planes_num > 0 || lighting == 1
 	float4 modelpos = mul(Imodelview, Nposition);
 #endif
 	// User clip planes
@@ -158,7 +172,7 @@ void main(
 	vPosition = mul(Jwvp, Nposition);
 	
 	// Lighting
-#if lights_num > 0
+#if lighting == 1 && lights_num > 0
 #if (fixed_mode_mask & 0x01) == 0x01
 	Tnormals = GLFixed3ToFloat3(Tnormals);
 #endif
@@ -172,9 +186,11 @@ void main(
 	float4 Ambient = float4(0.0f, 0.0f, 0.0f, 0.0f);
 	float4 Diffuse = float4(0.0f, 0.0f, 0.0f, 0.0f);
 	float4 Specular = float4(0.0f, 0.0f, 0.0f, 0.0f);
+#if lights_num > 0
 	for (short i = 0; i < lights_num; i++) {
 		calculate_light(i, ecPosition, normal, Ambient, Diffuse, Specular);
 	}
+#endif
 #endif
 #endif
 
@@ -196,18 +212,25 @@ void main(
 #endif
 #endif
 #endif
-#if lights_num > 0
+#if lighting == 1
 #if shading_mode < 1 // GL_SMOOTH/GL_FLAT
-	vColor = Semission + Pcolor * Flight_global_ambient;
-	vColor += Ambient * Pcolor + Diffuse * Qdiff + Specular * Rspec;
+	vColor.rgb = Semission.rgb + Pcolor.rgb * Flight_global_ambient.rgb;
+#if lights_num > 0
+	vColor.rgb += Ambient.rgb * Pcolor.rgb + Diffuse.rgb * Qdiff.rgb + Specular.rgb * Rspec.rgb;
+#endif
+	vColor.a = Qdiff.a;
 	vColor = clamp(vColor, 0.0f, 1.0f);
 #endif
 #if shading_mode == 1 // GL_PHONG_WIN
 	vColor = Pcolor;
+#if lights_num > 0
 	vNormal = normal;
 	vEcPosition = ecPosition;
+#endif
 	vDiffuse = Qdiff;
+#if lights_num > 0
 	vSpecular = Rspec;
+#endif
 	vEmission = Semission;
 #endif
 #elif has_colors == 1

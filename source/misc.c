@@ -398,6 +398,7 @@ void glEnable(GLenum cap) {
 		break;
 	case GL_LIGHTING:
 		ffp_dirty_vert = GL_TRUE;
+		ffp_dirty_frag = GL_TRUE;
 		lighting_state = GL_TRUE;
 		break;
 	case GL_DEPTH_TEST:
@@ -416,6 +417,7 @@ void glEnable(GLenum cap) {
 	case GL_COLOR_MATERIAL:
 		color_material_state = GL_TRUE;
 		adjust_color_material_state();
+		ffp_dirty_vert_attr |= (1 << FFP_ATTRIB_COLOR);
 		break;
 	case GL_SCISSOR_TEST:
 		scissor_test_state = GL_TRUE;
@@ -535,6 +537,7 @@ void glDisable(GLenum cap) {
 	case GL_COLOR_MATERIAL:
 		color_material_state = GL_FALSE;
 		adjust_color_material_state();
+		ffp_dirty_vert_attr |= (1 << FFP_ATTRIB_COLOR);
 		break;
 	case GL_DEPTH_TEST:
 		depth_test_state = GL_FALSE;
@@ -651,7 +654,7 @@ void glClear(GLbitfield mask) {
 	invalidate_viewport();
 	sceGxmSetCullMode(gxm_context, SCE_GXM_CULL_NONE);
 
-	void *fbuffer, *vbuffer;
+	void *fbuffer = NULL, *vbuffer = NULL;
 
 	orig_depth_test = depth_test_state;
 
@@ -670,11 +673,19 @@ void glClear(GLbitfield mask) {
 	sceGxmSetVertexProgram(gxm_context, clear_vertex_program_patched);
 	sceGxmSetFragmentProgram(gxm_context, is_fbo_float ? clear_fragment_program_float_patched : clear_fragment_program_patched);
 
-	sceGxmReserveVertexDefaultUniformBuffer(gxm_context, &vbuffer);
+	int reserve_result = sceGxmReserveVertexDefaultUniformBuffer(gxm_context, &vbuffer);
+	if (reserve_result == 0)
+		reserve_result = sceGxmReserveFragmentDefaultUniformBuffer(gxm_context, &fbuffer);
+	if (reserve_result != 0 || !vbuffer || !fbuffer) {
+		vgl_log("%s:%d: %s uniform reservation failed (0x%08X)\n", __FILE__, __LINE__, __func__, (unsigned int)reserve_result);
+		if (vgl_error == GL_NO_ERROR) {
+			vgl_error = reserve_result == (int)SCE_GXM_ERROR_OUT_OF_MEMORY || reserve_result == (int)SCE_GXM_ERROR_RESERVE_FAILED
+				? GL_OUT_OF_MEMORY : GL_INVALID_OPERATION;
+		}
+		goto restore_state;
+	}
 	sceGxmSetUniformDataF(vbuffer, clear_position, 0, 4, &clear_vertices->x);
 	sceGxmSetUniformDataF(vbuffer, clear_depth, 0, 1, &clear_depth_value);
-
-	sceGxmReserveFragmentDefaultUniformBuffer(gxm_context, &fbuffer);
 	sceGxmSetUniformDataF(fbuffer, clear_color, 0, 4, &clear_rgba_val.r);
 
 	// Disable fragment program if not clearing color buffer. Depth and stencil clears are unaffected.
@@ -714,8 +725,9 @@ void glClear(GLbitfield mask) {
 		sceGxmSetBackStencilRef(gxm_context, stencil_value & 0xFF);
 	}
 
-	sceGxmDraw(gxm_context, SCE_GXM_PRIMITIVE_TRIANGLE_FAN, SCE_GXM_INDEX_FORMAT_U16, depth_clear_indices, 4);
+	sceGxmDrawPrecomputed(gxm_context, &clear_draw_state);
 
+restore_state:
 	validate_depth_test();
 	change_depth_write((depth_mask_state && depth_test_state) ? SCE_GXM_DEPTH_WRITE_ENABLED : SCE_GXM_DEPTH_WRITE_DISABLED);
 
@@ -961,7 +973,7 @@ void glPopAttrib(void) {
 		SET_GL_ERROR(GL_STACK_UNDERFLOW)
 	}
 #endif
-	attrib_state *setup = &attrib_stack[attrib_stack_counter--];
+	attrib_state *setup = &attrib_stack[--attrib_stack_counter];
 
 	if (setup->enabled_bits & (1 << COLOR_BUFFER_BIT)) {
 		alpha_test_state = setup->alpha_test_state;
@@ -1014,6 +1026,15 @@ void glPopAttrib(void) {
 		update_fogging_state();
 		clip_planes_mask = setup->clip_planes_mask;
 		light_mask = setup->light_mask;
+		light_range[0] = light_mask ? __builtin_ctz(light_mask) : 0;
+		light_range[1] = light_mask ? 8 - (__builtin_clz(light_mask) - 24) : 0;
+		lights_aligned = GL_TRUE;
+		for (int i = light_range[0]; i < light_range[1]; i++) {
+			if (!(light_mask & (1 << i))) {
+				lights_aligned = GL_FALSE;
+				break;
+			}
+		}
 		ffp_dirty_vert = GL_TRUE;
 		ffp_dirty_frag = GL_TRUE;
 	}
