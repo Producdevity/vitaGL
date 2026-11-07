@@ -22,6 +22,7 @@
  */
 
 #include "../shared.h"
+#include "../memory_stats_probe.h"
 
 GLboolean has_cached_mem = GL_FALSE; // Flag for whether to use cached memory for mempools or not
 
@@ -415,6 +416,7 @@ void *vgl_alloc_phycont_block(uint32_t size) {
 #endif
 
 void vgl_mem_init(size_t size_ram, size_t size_cdram, size_t size_phycont, size_t size_cdlg) {
+	vgl_mspace_stats_probe_initialize();
 	vgl_has_cdlg_support = GL_TRUE;
 
 	if (!has_cached_mem && size_ram > 0xC800000) // Vita has a smaller address mapping for uncached mem
@@ -494,7 +496,9 @@ void vgl_mem_init(size_t size_ram, size_t size_cdram, size_t size_phycont, size_
 				mempool_end[i] = (void *)((uintptr_t)mempool_addr[i] + mempool_size[i]);
 				sceGxmMapMemory(mempool_addr[i], mempool_size[i], SCE_GXM_MEMORY_ATTRIB_RW);
 #ifndef HAVE_CUSTOM_HEAP
+				GLboolean probe_locked = vgl_mspace_stats_probe_begin((vglMemType)i);
 				mempool_mspace[i] = sceClibMspaceCreate(mempool_addr[i], mempool_size[i]);
+				vgl_mspace_stats_probe_end((vglMemType)i, probe_locked);
 #else
 				heap_extend(i, mempool_addr[i], mempool_size[i]);
 #endif
@@ -544,6 +548,10 @@ void vgl_mem_provide_phycont(size_t size_phycont) {
 	if (mempool_size[VGL_MEM_PHYCONT])
 		return;
 
+#ifndef HAVE_CUSTOM_HEAP
+	GLboolean probe_locked = vgl_mspace_stats_probe_begin(VGL_MEM_PHYCONT);
+#endif
+
 	SceUID mempool_id;
 	mempool_size[VGL_MEM_PHYCONT] = VGL_ALIGN(size_phycont, 1024 * 1024);
 	if (has_cached_mem) {
@@ -573,6 +581,9 @@ void vgl_mem_provide_phycont(size_t size_phycont) {
 		heap_extend(VGL_MEM_PHYCONT, mempool_addr[VGL_MEM_PHYCONT], mempool_size[VGL_MEM_PHYCONT]);
 #endif
 	}
+#ifndef HAVE_CUSTOM_HEAP
+	vgl_mspace_stats_probe_end(VGL_MEM_PHYCONT, probe_locked);
+#endif
 }
 #endif
 
@@ -626,7 +637,7 @@ size_t vgl_mem_get_free_space(vglMemType type) {
 #else
 	} else if (mempool_size[type]) {
 		SceClibMspaceStats stats;
-		sceClibMspaceMallocStats(mempool_mspace[type], &stats);
+		vgl_mspace_stats_probe_stats(type, mempool_mspace[type], &stats);
 		return stats.capacity - stats.current_in_use;
 	} else
 		return 0;
@@ -689,8 +700,11 @@ void vgl_free(void *ptr) {
 		tm_max_failed_alloc[type] = tm_free[type] + 1;
 	}
 #else
-	else if (mempool_mspace[type])
+	else if (mempool_mspace[type]) {
+		GLboolean probe_locked = vgl_mspace_stats_probe_begin(type);
 		sceClibMspaceFree(mempool_mspace[type], ptr);
+		vgl_mspace_stats_probe_end(type, probe_locked);
+	}
 #endif
 }
 
@@ -709,8 +723,12 @@ void *vgl_malloc(size_t size, vglMemType type) {
 	else if (size <= tm_max_failed_alloc[type])
 		return heap_alloc(type, size, MEM_ALIGNMENT);
 #else
-	else if (mempool_mspace[type])
-		return sceClibMspaceMalloc(mempool_mspace[type], size);
+	else if (mempool_mspace[type]) {
+		GLboolean probe_locked = vgl_mspace_stats_probe_begin(type);
+		void *result = sceClibMspaceMalloc(mempool_mspace[type], size);
+		vgl_mspace_stats_probe_end(type, probe_locked);
+		return result;
+	}
 #endif
 	return NULL;
 }
@@ -740,8 +758,12 @@ void *vgl_calloc(size_t num, size_t size, vglMemType type) {
 		return ret;
 	}
 #else
-	else if (mempool_mspace[type])
-		return sceClibMspaceCalloc(mempool_mspace[type], num, size);
+	else if (mempool_mspace[type]) {
+		GLboolean probe_locked = vgl_mspace_stats_probe_begin(type);
+		void *result = sceClibMspaceCalloc(mempool_mspace[type], num, size);
+		vgl_mspace_stats_probe_end(type, probe_locked);
+		return result;
+	}
 #endif
 	return NULL;
 }
@@ -761,8 +783,12 @@ void *vgl_memalign(size_t alignment, size_t size, vglMemType type) {
 	else if (size <= tm_max_failed_alloc[type])
 		return heap_alloc(type, size, alignment);
 #else
-	else if (mempool_mspace[type])
-		return sceClibMspaceMemalign(mempool_mspace[type], alignment, size);
+	else if (mempool_mspace[type]) {
+		GLboolean probe_locked = vgl_mspace_stats_probe_begin(type);
+		void *result = sceClibMspaceMemalign(mempool_mspace[type], alignment, size);
+		vgl_mspace_stats_probe_end(type, probe_locked);
+		return result;
+	}
 #endif
 	return NULL;
 }
@@ -798,7 +824,10 @@ void *vgl_realloc(void *ptr, size_t size) {
 	}
 #endif
 #ifndef HAVE_CUSTOM_HEAP
-	return sceClibMspaceRealloc(mempool_mspace[type], ptr, size);
+	GLboolean probe_locked = vgl_mspace_stats_probe_begin(type);
+	void *result = sceClibMspaceRealloc(mempool_mspace[type], ptr, size);
+	vgl_mspace_stats_probe_end(type, probe_locked);
+	return result;
 #else
 	return heap_realloc(type, ptr, size);
 #endif

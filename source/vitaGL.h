@@ -1125,6 +1125,32 @@ typedef enum {
 	VGL_MEM_ALL
 } vglMemType;
 
+#define VGL_MSPACE_STATS_PROBE_ABI_VERSION 1
+#define VGL_MSPACE_STATS_PROBE_POOL_COUNT 4
+
+typedef struct {
+	uint64_t queries;
+	uint64_t eligible_hits;
+	uint64_t mismatches;
+	uint64_t mutation_attempts;
+	uint64_t invalid_queries;
+} vglMspaceStatsProbePool;
+
+typedef struct {
+	uint32_t abi_version;
+	uint32_t struct_size;
+	uint32_t supported;
+	uint32_t enabled;
+	uint32_t initialized;
+	uint32_t reserved;
+	vglMspaceStatsProbePool pools[VGL_MSPACE_STATS_PROBE_POOL_COUNT];
+} vglMspaceStatsProbe;
+
+// Startup-only, before vglInit*. Default OFF; observes real stats without reusing them.
+GLboolean vglSetMspaceStatsProbe(GLboolean enable);
+// Copies each pool under its lock. Exact ABI/size required; failure leaves output unchanged.
+GLboolean vglGetMspaceStatsProbe(vglMspaceStatsProbe *out, uint32_t size, uint32_t abi_version);
+
 typedef enum {
 	VGL_TYPE_NONE, // No semantic
 	VGL_TYPE_TEXCOORD, // TEXCOORD#
