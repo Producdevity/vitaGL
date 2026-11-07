@@ -1151,6 +1151,39 @@ GLboolean vglSetMspaceStatsProbe(GLboolean enable);
 // Copies each pool under its lock. Exact ABI/size required; failure leaves output unchanged.
 GLboolean vglGetMspaceStatsProbe(vglMspaceStatsProbe *out, uint32_t size, uint32_t abi_version);
 
+#define VGL_MSPACE_STATS_CACHE_ABI_VERSION 1
+#define VGL_MSPACE_STATS_CACHE_POOL_COUNT 4
+#define VGL_MSPACE_STATS_CACHE_OFF 0
+#define VGL_MSPACE_STATS_CACHE_REUSE 1
+#define VGL_MSPACE_STATS_CACHE_VERIFY 2
+
+typedef struct {
+	uint64_t queries;
+	uint64_t eligible_hits;
+	uint64_t reused;
+	uint64_t native_calls;
+	uint64_t verification_checks;
+	uint64_t mismatches;
+	uint64_t mutation_attempts;
+	uint64_t invalid_queries;
+} vglMspaceStatsCachePool;
+
+typedef struct {
+	uint32_t abi_version;
+	uint32_t struct_size;
+	uint32_t supported;
+	uint32_t mode;
+	uint32_t initialized;
+	uint32_t validation_failed;
+	uint32_t reserved[2];
+	vglMspaceStatsCachePool pools[VGL_MSPACE_STATS_CACHE_POOL_COUNT];
+} vglMspaceStatsCache;
+
+// Startup-only; OFF by default. Non-OFF modes and the dry-run probe are mutually exclusive.
+GLboolean vglSetMspaceStatsCache(uint32_t mode);
+// Per-pool snapshots; exact ABI/size required, failure leaves output unchanged.
+GLboolean vglGetMspaceStatsCache(vglMspaceStatsCache *out, uint32_t size, uint32_t abi_version);
+
 typedef enum {
 	VGL_TYPE_NONE, // No semantic
 	VGL_TYPE_TEXCOORD, // TEXCOORD#
